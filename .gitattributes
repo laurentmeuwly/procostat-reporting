@@ -1,0 +1,27 @@
+# Normalize all text files to LF endings
+* text=auto eol=lf
+
+# Do not include tests and CI stuff when exporting to composer
+/tests        export-ignore
+/.github      export-ignore
+/.gitattributes export-ignore
+/.gitignore   export-ignore
+
+# Ignore development files during composer installs
+/phpunit.xml        export-ignore
+/Makefile           export-ignore
+
+# Do not treat images and binaries as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+
+# Ensure migrations and stubs are treated as text
+*.stub text eol=lf
+*.php  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf

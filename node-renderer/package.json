@@ -1,0 +1,9 @@
+{
+  "name": "procostat-chart-renderer",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "chart.js": "^4.5.0",
+    "chartjs-node-canvas": "^5.0.0"
+  }
+}

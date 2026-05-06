@@ -1,0 +1,31 @@
+# Dependencies
+/vendor/
+composer.lock
+
+# PHPUnit / Pest
+.phpunit.result.cache
+/.phpunit.cache/
+tests/.temp/
+
+# Laravel IDE helper & misc
+/_ide_helper.php
+/_ide_helper_models.php
+/.phpstorm.meta.php/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PHPStan / Pint caches
+.phpstan/
+phpstan.neon.local
+.pint.json
+.pint.cache
+
+# Generated documentation or artifacts
+/build/
+coverage/
+dist/
