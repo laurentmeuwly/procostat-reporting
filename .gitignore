@@ -1,5 +1,10 @@
-# Dependencies
-/vendor/
+# =====================================
+# Laravel
+# =====================================
+/vendor
+/node-renderer/node_modules
+/.env
+
 composer.lock
 
 # PHPUnit / Pest

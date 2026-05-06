@@ -1,9 +1,15 @@
 {
-  "name": "procostat-chart-renderer",
+  "name": "procostat-reporting-renderer",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Node.js Chart.js renderer for procostat-reporting",
+  "private": true,
+  "scripts": {
+    "test": "node render.js < test-input.json | file -"
+  },
   "dependencies": {
-    "chart.js": "^4.5.0",
-    "chartjs-node-canvas": "^5.0.0"
+    "canvas": "^2.11.2",
+    "chart.js": "^4.4.1",
+    "chartjs-node-canvas": "^4.1.6",
+    "chartjs-plugin-annotation": "^3.0.1"
   }
 }
