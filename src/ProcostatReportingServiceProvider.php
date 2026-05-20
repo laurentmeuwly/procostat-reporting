@@ -72,21 +72,12 @@ final class ProcostatReportingServiceProvider extends ServiceProvider
         $this->app->singleton(PowerPointDocumentGenerator::class, fn ($app)
             => new PowerPointDocumentGenerator($app->make(NodeRenderer::class)));
 
-        // ReportManager : stopOnFirstError = true (les 3 ou rien)
+        // ReportManager conservé pour usage générique éventuel
         $this->app->singleton(ReportManager::class, function ($app) {
             $manager = new ReportManager(stopOnFirstError: true);
-
-            $map = [
-                'xlsx' => ExcelDocumentGenerator::class,
-                'docx' => WordDocumentGenerator::class,
-                'pptx' => PowerPointDocumentGenerator::class,
-            ];
-
-            foreach (config('procostat-reporting.enabled_formats', ['xlsx', 'docx', 'pptx']) as $format) {
-                if (isset($map[$format])) {
-                    $manager->register($app->make($map[$format]));
-                }
-            }
+            $manager->register($app->make(ExcelDocumentGenerator::class));
+            $manager->register($app->make(WordDocumentGenerator::class));
+            $manager->register($app->make(PowerPointDocumentGenerator::class));
 
             return $manager;
         });

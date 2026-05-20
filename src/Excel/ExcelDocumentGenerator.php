@@ -19,6 +19,20 @@ use Procorad\ProcostatReporting\Exceptions\ReportGenerationException;
 use Procorad\ProcostatReporting\Support\FormatHelper;
 use Procorad\ProcostatReporting\Support\PackagePaths;
 
+/**
+ * Generates one .xlsx file per SampleAnalysisData (sample × isotope).
+ *
+ * Each file has 6 sheets:
+ *   1. procostat data   — metadata block + full lab results table
+ *   2. results lab asc  — placeholder (future: results sorted by lab number)
+ *   3. results val asc  — placeholder (future: results sorted by value)
+ *   4. bias             — placeholder (future: bias chart data)
+ *   5. zprime_score     — placeholder (future: z'-score chart data)
+ *   6. zeta_score       — placeholder (future: zeta-score chart data)
+ *
+ * ReportManager calls generate() once per analysis via GenerateReportsAction,
+ * which loops over data->analyses and builds one output path per file.
+ */
 final class ExcelDocumentGenerator implements DocumentGenerator
 {
     private const BLUE_DARK  = '1F497D';
@@ -26,52 +40,81 @@ final class ExcelDocumentGenerator implements DocumentGenerator
     private const WHITE      = 'FFFFFF';
     private const GREY_ROW   = 'F2F2F2';
 
+    // Sheet names (6 tabs)
+    private const SHEETS = [
+        'procostat data',
+        'results lab asc',
+        'results val asc',
+        'bias',
+        'zprime_score',
+        'zeta_score',
+    ];
+
     public function format(): string
     {
         return 'xlsx';
     }
 
+    /**
+     * Generate exactly ONE xlsx for the first (and expected only) analysis in $data.
+     *
+     * GenerateReportsAction is responsible for the loop over analyses and calls
+     * this method once per analysis with a dedicated single-analysis $data and
+     * a fully-resolved $outputPath (e.g. /…/2026_25CB_25CB_14C.xlsx).
+     *
+     * ReportResult::files key is "xlsx:{sampleCode}:{isotope}" so that the
+     * Action can merge multiple results without key collision.
+     */
     public function generate(IntercomparisonReportData $data, string $outputPath): ReportResult
     {
-        $start = hrtime(true);
+        $start    = hrtime(true);
+        $analysis = $data->analyses[0]
+            ?? throw new ReportGenerationException($this->format(), 'No analysis provided.');
 
         try {
-            $spreadsheet = new Spreadsheet();
-            $spreadsheet->getProperties()
-                ->setTitle("{$data->icCode} {$data->year}")
-                ->setCreator('procostat-reporting');
-
-            $first = true;
-            foreach ($data->analyses as $analysis) {
-                $ws = $first
-                    ? $spreadsheet->getActiveSheet()
-                    : $spreadsheet->createSheet();
-                $first = false;
-
-                $sheetTitle = substr("{$analysis->sampleCode}_{$analysis->isotope}", 0, 31);
-                $ws->setTitle($sheetTitle);
-
-                $this->buildAnalysisSheet($ws, $analysis, $data);
-            }
-
-            $spreadsheet->setActiveSheetIndex(0);
-
-            (new Xlsx($spreadsheet))->save($outputPath);
-
+            $this->buildFile($outputPath, $analysis, $data);
         } catch (\Throwable $e) {
             throw ReportGenerationException::fromThrowable($this->format(), $e);
         }
 
         return new ReportResult(
-            files: [$this->format() => $outputPath],
+            files: ["xlsx:{$analysis->sampleCode}:{$analysis->isotope}" => $outputPath],
             errors: [],
             durationMs: (hrtime(true) - $start) / 1_000_000,
         );
     }
 
-    // ── Sheet builder ────────────────────────────────────────────────────────
+    // ── File builder ─────────────────────────────────────────────────────────
 
-    private function buildAnalysisSheet(
+    private function buildFile(
+        string $filePath,
+        SampleAnalysisData $analysis,
+        IntercomparisonReportData $data,
+    ): void {
+        $spreadsheet = new Spreadsheet();
+        $spreadsheet->getProperties()
+            ->setTitle("{$data->year}_{$data->icCode}_{$analysis->sampleCode}_{$analysis->isotope}")
+            ->setCreator('procostat-reporting');
+
+        // Sheet 1: procostat data (populated)
+        $ws = $spreadsheet->getActiveSheet();
+        $ws->setTitle(self::SHEETS[0]);
+        $this->buildProcostatDataSheet($ws, $analysis, $data);
+
+        // Sheets 2–6: stubs (data + charts in next iteration)
+        foreach (array_slice(self::SHEETS, 1) as $sheetName) {
+            $stub = $spreadsheet->createSheet();
+            $stub->setTitle($sheetName);
+            $this->buildStubSheet($stub, $sheetName);
+        }
+
+        $spreadsheet->setActiveSheetIndex(0);
+        (new Xlsx($spreadsheet))->save($filePath);
+    }
+
+    // ── Sheet 1: procostat data ──────────────────────────────────────────────
+
+    private function buildProcostatDataSheet(
         Worksheet $ws,
         SampleAnalysisData $analysis,
         IntercomparisonReportData $data,
@@ -86,8 +129,14 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $ws->getRowDimension(1)->setRowHeight(50);
         $ws->getRowDimension(2)->setRowHeight(8);
 
-        // ── Metadata block (row 3–12) ────────────────────────────────────────
+        // Column widths (A–G)
+        foreach (['A' => 22, 'B' => 20, 'C' => 4, 'D' => 22, 'E' => 14] as $col => $w) {
+            $ws->getColumnDimension($col)->setWidth($w);
+        }
+
+        // ── Metadata block ───────────────────────────────────────────────────
         $metaStart = 3;
+
         $this->sectionHeader($ws, "A{$metaStart}:B{$metaStart}", 'Informations générales');
         $this->sectionHeader($ws, "D{$metaStart}:E{$metaStart}", 'Limites z-score');
 
@@ -105,33 +154,28 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         ];
 
         foreach ($metaRows as $i => [$label, $value]) {
-            $r = $metaStart + 1 + $i;
-            $this->metaRow($ws, $r, 'A', 'B', $label, $value);
+            $this->metaRow($ws, $metaStart + 1 + $i, 'A', 'B', $label, $value);
         }
 
         $limitRows = [
             ['Avertissement (bas)',  '-2'],
-            ['Avertissement (haut)', '2'],
+            ['Avertissement (haut)', '+2'],
             ['Action (bas)',         '-3'],
-            ['Action (haut)',        '3'],
+            ['Action (haut)',        '+3'],
         ];
         foreach ($limitRows as $i => [$label, $value]) {
-            $r = $metaStart + 1 + $i;
-            $this->metaRow($ws, $r, 'D', 'E', $label, $value);
+            $this->metaRow($ws, $metaStart + 1 + $i, 'D', 'E', $label, $value);
         }
 
-        // ── Data table ───────────────────────────────────────────────────────
+        // ── Lab results table ────────────────────────────────────────────────
         $tableStart = $metaStart + count($metaRows) + 3;
-        $headers    = [
-            'LAB N°', "ACTIVITÉ\n{$analysis->unit}", "INCERTITUDE\n(k=2) {$analysis->unit}",
-            "LD\n{$analysis->unit}", 'BIAIS %', 'En', 'Z-SCORE',
-        ];
+
+        $headers   = ['LAB N°', "ACTIVITÉ\n{$analysis->unit}", "INCERTITUDE\n(k=2)", "LD", 'BIAIS %', 'En', 'Z-SCORE'];
         $cols      = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
-        $colWidths = [10,  16,   22,  12,  10,  10,  12];
+        $colWidths = [10, 16, 18, 12, 10, 10, 12];
 
         foreach ($headers as $i => $header) {
-            $cell = $ws->getCell("{$cols[$i]}{$tableStart}");
-            $cell->setValue($header);
+            $ws->getCell("{$cols[$i]}{$tableStart}")->setValue($header);
             $ws->getStyle("{$cols[$i]}{$tableStart}")->applyFromArray([
                 'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
                 'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
@@ -145,8 +189,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         /** @var LabResultData $lab */
         foreach ($analysis->labResults as $idx => $lab) {
             $row    = $tableStart + 1 + $idx;
-            $isEven = ($idx % 2 === 0);
-            $bg     = $isEven ? self::GREY_ROW : self::WHITE;
+            $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
 
             $values = [
                 $lab->labNumber,
@@ -154,14 +197,14 @@ final class ExcelDocumentGenerator implements DocumentGenerator
                 FormatHelper::scientific($lab->expandedUncertainty),
                 FormatHelper::scientific($lab->detectionLimit),
                 $lab->biasPercent !== null ? round($lab->biasPercent) : '',
-                $lab->enScore !== null     ? round($lab->enScore, 1) : '',
-                $lab->zScore !== null      ? round($lab->zScore, 1)  : '',
+                $lab->enScore     !== null ? round($lab->enScore, 1)  : '',
+                $lab->zScore      !== null ? round($lab->zScore, 1)   : '',
             ];
 
             foreach ($values as $ci => $value) {
                 $ws->getCell("{$cols[$ci]}{$row}")->setValue($value);
                 $ws->getStyle("{$cols[$ci]}{$row}")->applyFromArray([
-                    'font'      => ['name' => 'Calibri', 'size' => 10, 'bold' => $ci === 0],
+                    'font'      => ['name' => 'Calibri', 'size' => 10, 'bold' => ($ci === 0)],
                     'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.$bg]],
                     'alignment' => ['horizontal' => $ci === 0
                         ? Alignment::HORIZONTAL_CENTER
@@ -171,7 +214,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
                 ]);
             }
 
-            // Z-SCORE colour highlight
+            // Z-score colour
             if ($lab->zScore !== null) {
                 $zColor = FormatHelper::zscoreColor($lab->zScore);
                 if ($zColor !== '4472C4') {
@@ -182,11 +225,19 @@ final class ExcelDocumentGenerator implements DocumentGenerator
                 }
             }
         }
+    }
 
-        // Column widths
-        foreach ($cols as $i => $col) {
-            $ws->getColumnDimension($col)->setWidth($colWidths[$i]);
-        }
+    // ── Stub sheets 2–6 ─────────────────────────────────────────────────────
+
+    private function buildStubSheet(Worksheet $ws, string $sheetName): void
+    {
+        $ws->getCell('A1')->setValue($sheetName);
+        $ws->getStyle('A1')->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['argb' => 'FF'.self::BLUE_DARK], 'name' => 'Calibri', 'size' => 12],
+        ]);
+        $ws->getCell('A2')->setValue('Données à venir.');
+        $ws->getStyle('A2')->getFont()->setItalic(true)->setColor(new Color('FF888888'));
+        $ws->getColumnDimension('A')->setWidth(30);
     }
 
     // ── Style helpers ────────────────────────────────────────────────────────
@@ -201,8 +252,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
         ]);
-        $row = (int) preg_replace('/\D/', '', $firstCell);
-        $ws->getRowDimension($row)->setRowHeight(22);
+        $ws->getRowDimension((int) preg_replace('/\D/', '', $firstCell))->setRowHeight(22);
     }
 
     private function metaRow(Worksheet $ws, int $row, string $colL, string $colV, string $label, string $value): void
