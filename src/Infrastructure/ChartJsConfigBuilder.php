@@ -5,6 +5,7 @@ namespace Procorad\ProcostatReporting\Infrastructure;
 use Procorad\ProcostatReporting\ValueObject\PlotSpec;
 use Procorad\ProcostatReporting\ValueObject\PlotType;
 use Procorad\ProcostatReporting\ValueObject\ThresholdBand;
+use Procorad\ProcostatReporting\ValueObject\SortOrder;
 
 final class ChartJsConfigBuilder
 {
@@ -19,7 +20,15 @@ final class ChartJsConfigBuilder
     public function fromPlotSpec(PlotSpec $plot): array
     {
         $series = $plot->series[0];
-        $values = $series->values;
+
+        // Trier labels + values ensemble selon sortOrder
+        [$labels, $values] = $this->sort(
+            $series->labels,
+            $series->values,
+            $plot->sortOrder
+        );
+
+        //$values = $series->values;
 
         $levels = $this->extractSymmetricLevels($plot->thresholds);
 
@@ -31,9 +40,9 @@ final class ChartJsConfigBuilder
         return [
             'type' => 'bar',
             'data' => [
-                'labels'   => $series->labels,
+                'labels'   => $labels,
                 'datasets' => [[
-                    'label'           => $series->label,
+                    'label'           => $labels,
                     'data'            => $values,
                     'backgroundColor' => $bgColors,
                     'borderColor'     => $borderColors,
@@ -67,6 +76,23 @@ final class ChartJsConfigBuilder
                     ],
                 ],
             ],
+        ];
+    }
+
+    // --- tri des valeurs
+    private function sort(array $labels, array $values, SortOrder $order): array
+    {
+        $pairs = array_map(null, $labels, $values); // [[label, value], ...]
+
+        match ($order) {
+            SortOrder::LABEL_ASC  => usort($pairs, fn($a, $b) => $a[0] <=> $b[0]),
+            SortOrder::VALUE_ASC  => usort($pairs, fn($a, $b) => $a[1] <=> $b[1]),
+            SortOrder::VALUE_DESC => usort($pairs, fn($a, $b) => $b[1] <=> $a[1]),
+        };
+
+        return [
+            array_column($pairs, 0), // labels triés
+            array_column($pairs, 1), // values triées
         ];
     }
 

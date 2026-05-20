@@ -2,10 +2,17 @@
 # Laravel
 # =====================================
 /vendor
+node/node_modules/
+node/tmp/
 /node-renderer/node_modules
 /.env
 
 composer.lock
+
+*.pptx
+*.docx
+*.xlsx
+*.pdf
 
 # PHPUnit / Pest
 .phpunit.result.cache

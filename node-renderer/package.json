@@ -1,15 +1,20 @@
 {
-  "name": "procostat-reporting-renderer",
-  "version": "1.0.0",
-  "description": "Node.js Chart.js renderer for procostat-reporting",
-  "private": true,
-  "scripts": {
-    "test": "node render.js < test-input.json | file -"
-  },
-  "dependencies": {
-    "canvas": "^2.11.2",
-    "chart.js": "^4.4.1",
-    "chartjs-node-canvas": "^4.1.6",
-    "chartjs-plugin-annotation": "^3.0.1"
-  }
+    "name": "procostat-reporting",
+    "version": "1.0.0",
+    "description": "Node.js renderers for procostat_reporting (DOCX, PPTX and chart generation)",
+    "private": true,
+    "scripts": {
+        "install-deps": "npm install"
+    },
+    "dependencies": {
+        "docx": "^9.0.0",
+        "pptxgenjs": "^3.12.0",
+        "canvas": "^3.2.3",
+        "chart.js": "^4.4.1",
+        "chartjs-node-canvas": "^5.0.0",
+        "chartjs-plugin-annotation": "^3.0.1"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
 }

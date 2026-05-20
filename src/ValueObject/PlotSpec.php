@@ -14,6 +14,7 @@ final class PlotSpec
         public readonly string $yLabel,
         public readonly array $series,
         public readonly array $thresholds = [],
+        public readonly SortOrder $sortOrder  = SortOrder::LABEL_ASC,
     ) {
         if (empty($series)) {
             throw new \InvalidArgumentException('PlotSpec requires at least one series.');

@@ -1,8 +1,8 @@
 {
     "name": "procorad/procostat-reporting",
-    "description": "Reporting and visualization layer for PROCOSTAT statistical results.",
+    "description": "Document reporting engine for Procorad — generates XLSX, DOCX, PPTX and PDF from a ProcostatReportData DTO.",
     "type": "library",
-    "license": "MIT",
+    "license": "proprietary",
     "authors": [
         {
             "name": "laurentmeuwly",
@@ -21,9 +21,23 @@
             "Procorad\\ProcostatReporting\\Tests\\": "tests/"
         }
     },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Procorad\\ProcostatReporting\\ProcostatReportingServiceProvider"
+            ],
+            "aliases": {
+                "ProcostatReporting": "Procorad\\ProcostatReporting\\Facades\\ProcostatReporting"
+            }
+        }
+    },
     "require": {
         "php": ">=8.2",
-        "procorad/procostat": "^1.0"
+        "barryvdh/laravel-snappy": "^1.0",
+        "illuminate/support": "^11.0|^12.0",
+        "illuminate/contracts": "^11.0|^12.0",
+        "phpoffice/phpspreadsheet": "^3.0",
+        "symfony/process": "^7.0"
     },
     "require-dev": {
         "laravel/pint": "^1.0",
@@ -31,7 +45,8 @@
         "pestphp/pest": "^3.8",
         "pestphp/pest-plugin-laravel": "^3.2",
         "phpstan/phpstan": "^2.1",
-        "larastan/larastan": "^3.8"
+        "larastan/larastan": "^3.8",
+        "mockery/mockery": "^1.6"
     },
     "repositories": [
         {
@@ -41,6 +56,7 @@
     ],
     "prefer-stable": true,
     "config": {
+        "sort-packages": true,
         "allow-plugins": {
             "pestphp/pest-plugin": true
         }
