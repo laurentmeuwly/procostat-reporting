@@ -80,14 +80,21 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $dataRef = fn(string $col) => "'{$sheet}'!\${$col}\$2:\${$col}\$" . ($n + 1);
 
             $patchChart = function (ChartDocument $doc, int $chartIndex, string $sheetName) use ($n, $yMax): void {
-                $dataRef = fn(string $col) => "'{$sheetName}'!\${$col}\$2:\${$col}\$" . ($n + 1);
+                // Error bars reference only real data rows (rows 3..n+2, skip phantoms)
+                $errRef = fn(string $col) => "'{$sheetName}'!\${$col}\$3:\${$col}\$" . ($n + 2);
                 $doc->chart($chartIndex)
-                    ->series(0)
-                        ->addErrorBars(ErrorBarDefinition::symmetric($dataRef(self::UNCERTAINTY_COL)))
+                    ->series(0)  // lab activity — points, error bars, no line
+                        ->addErrorBars(ErrorBarDefinition::symmetric($errRef(self::UNCERTAINTY_COL)))
                         ->setMarker(MarkerDefinition::circle('4472C4'))
                         ->setLine(LineDefinition::none())
-                    ->series(1)
+                    ->series(1)  // assigned value — solid red line, no marker
                         ->setLine(LineDefinition::solid('FF0000'))
+                        ->setMarker(MarkerDefinition::none())
+                    ->series(2)  // upper uncertainty bound — dashed red, no marker
+                        ->setLine(LineDefinition::dashed('FF0000', 'dash'))
+                        ->setMarker(MarkerDefinition::none())
+                    ->series(3)  // lower uncertainty bound — dashed red, no marker
+                        ->setLine(LineDefinition::dashed('FF0000', 'dash'))
                         ->setMarker(MarkerDefinition::none())
                     ->yAxis()
                         ->setScale(AxisScaleDefinition::fromZero($yMax))
@@ -244,11 +251,11 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $labs = collect($analysis->labResults)->sortBy($sortBy)->values()->all();
         $n    = count($labs);
 
-        // A=lab number, B=activity, C=uncertainty k2, D=assigned value
-        // Column letters must match UNCERTAINTY_COL and ChartDocument references
-        $headers     = ['LAB N°', "ACTIVITÉ ({$analysis->unit})", "INCERTITUDE k=2 ({$analysis->unit})", "VALEUR ASSIGNÉE ({$analysis->unit})"];
-        $tableCols   = ['A', 'B', 'C', 'D'];
-        $tableWidths = [10,  22,   26,   24];
+        // A=label, B=activity, C=uncertainty k2, D=assigned, E=upper, F=lower
+        // Phantom rows 2 and n+3 extend assigned-value lines beyond first/last lab.
+        $headers     = ['LAB N°', "ACTIVITÉ ({$analysis->unit})", "INCERTITUDE k=2 ({$analysis->unit})", "VALEUR ASSIGNÉE ({$analysis->unit})", "VA + INCERT.", "VA - INCERT."];
+        $tableCols   = ['A', 'B', 'C', 'D', 'E', 'F'];
+        $tableWidths = [10,  22,   26,   24,   14,   14];
 
         foreach ($headers as $i => $header) {
             $ws->getCell("{$tableCols[$i]}1")->setValue($header);
@@ -262,23 +269,44 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         }
         $ws->getRowDimension(1)->setRowHeight(32);
 
+        $assigned = $analysis->assignedValue;
+        $upper    = $assigned !== null && $analysis->assignedUncertainty !== null
+            ? $assigned + $analysis->assignedUncertainty : null;
+        $lower    = $assigned !== null && $analysis->assignedUncertainty !== null
+            ? $assigned - $analysis->assignedUncertainty : null;
+
+        // Row 2: phantom before — empty label, only D/E/F populated
+        foreach ([null, null, null, $assigned, $upper, $lower] as $ci => $value) {
+            if ($value !== null) {
+                $ws->getCell("{$tableCols[$ci]}2")->setValue($value);
+            }
+        }
+
+        // Real data rows start at row 3
         foreach ($labs as $idx => $lab) {
             /** @var LabResultData $lab */
-            $row    = $idx + 2;
+            $row    = $idx + 3;
             $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
-            // Lab number as string → Excel treats col A as a categorical axis,
-            // which preserves the sheet's row order regardless of the values.
-            // A numeric col A would cause Excel to re-sort points by X coordinate.
-            $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $analysis->assignedValue];
+            $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $assigned, $upper, $lower];
 
             foreach ($values as $ci => $value) {
-                $ws->getCell("{$tableCols[$ci]}{$row}")->setValue($value);
+                if ($value !== null) {
+                    $ws->getCell("{$tableCols[$ci]}{$row}")->setValue($value);
+                }
                 $ws->getStyle("{$tableCols[$ci]}{$row}")->applyFromArray([
                     'font'      => ['name' => 'Calibri', 'size' => 10],
                     'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.$bg]],
                     'alignment' => ['horizontal' => $ci === 0 ? Alignment::HORIZONTAL_CENTER : Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
                     'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFD9D9D9']]],
                 ]);
+            }
+        }
+
+        // Row n+3: phantom after — empty label, only D/E/F populated
+        $phantomAfterRow = $n + 3;
+        foreach ([null, null, null, $assigned, $upper, $lower] as $ci => $value) {
+            if ($value !== null) {
+                $ws->getCell("{$tableCols[$ci]}{$phantomAfterRow}")->setValue($value);
             }
         }
 
@@ -289,30 +317,40 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
     private function buildChartSkeleton(string $sheet, SampleAnalysisData $analysis, int $n): Chart
     {
+        // Rows: 2=phantom_before, 3..n+2=real data, n+3=phantom_after
         $dataRow = 2;
-        $lastRow = $n + 1;
+        $lastRow = $n + 3;
+        $total   = $lastRow - $dataRow + 1;
 
         $xLabels = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
-            "'{$sheet}'!\$A\${$dataRow}:\$A\${$lastRow}", null, $n);
+            "'{$sheet}'!\$A\${$dataRow}:\$A\${$lastRow}", null, $total);
 
         $label1  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ["{$analysis->isotope} Results ({$analysis->sampleCode})"]);
         $values1 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$B\${$dataRow}:\$B\${$lastRow}", null, $n);
+            "'{$sheet}'!\$B\${$dataRow}:\$B\${$lastRow}", null, $total);
 
         $label2  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ['Valeur assignée']);
         $values2 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$D\${$dataRow}:\$D\${$lastRow}", null, $n);
+            "'{$sheet}'!\$D\${$dataRow}:\$D\${$lastRow}", null, $total);
 
-        // TYPE_LINECHART with STYLE_MARKER = categorical X axis (equidistant points)
-        // Scatter chart treats X as numeric coordinates → points bunch by lab number value.
-        // Line chart treats X as categories → labels shown as-is, equal spacing guaranteed.
-        // The connecting line is removed via OOXML patch (LineDefinition::none() on each series).
+        $label3  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
+            null, null, 1, ['VA + incertitude']);
+        $values3 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+            "'{$sheet}'!\$E\${$dataRow}:\$E\${$lastRow}", null, $total);
+
+        $label4  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
+            null, null, 1, ['VA - incertitude']);
+        $values4 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+            "'{$sheet}'!\$F\${$dataRow}:\$F\${$lastRow}", null, $total);
+
         $series = new DataSeries(
             DataSeries::TYPE_LINECHART, DataSeries::GROUPING_STANDARD,
-            range(0, 1),
-            [$label1, $label2], [$xLabels, $xLabels], [$values1, $values2],
+            range(0, 3),
+            [$label1, $label2, $label3, $label4],
+            [$xLabels, $xLabels, $xLabels, $xLabels],
+            [$values1, $values2, $values3, $values4],
         );
         $series->setPlotStyle(DataSeries::STYLE_MARKER);
 
