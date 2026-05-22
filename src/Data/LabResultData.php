@@ -3,37 +3,45 @@
 namespace Procorad\ProcostatReporting\Data;
 
 /**
- * Immutable DTO carrying one lab's result for a given analysis.
- * Built by the app-side factory — no App\Models dependency in the package.
+ * Immutable DTO for one lab's result within a ProcostatAnalysis.
  *
- * v2 additions: activity, expandedUncertainty, detectionLimit, enScore
- * These were present on ProcostatLabResult but missing from this DTO,
- * causing IntercomparisonReportLabRow to receive nulls.
+ * Raw measurement values (activity, expandedUncertainty, detectionLimit) come
+ * exclusively from the ProcostatAnalysisMeasurement snapshot — never from
+ * submission_results, which may have been modified after calculation.
+ *
+ * The three measurement flags (isBelowLod, isIncluded, isTruncated) are carried
+ * forward for future xlsx styling (e.g. grey row for excluded labs, italic for
+ * winsorised values) but are not yet used by the generator.
  */
 final class LabResultData
 {
     public function __construct(
-        public readonly string  $laboratoryCode,
-        public readonly int     $labNumber,
+        public readonly string $laboratoryCode,
+        public readonly int    $labNumber,
 
-        // Raw measurement (needed for XLSX data sheet + DOCX/PPTX tables)
-        public readonly ?float  $activity,
-        public readonly ?float  $expandedUncertainty,
-        public readonly ?float  $detectionLimit,
+        // ── Immutable measurement snapshot (ProcostatAnalysisMeasurement) ──
+        public readonly ?float $activity,
+        public readonly ?float $expandedUncertainty,
+        public readonly ?float $detectionLimit,
 
-        // Scores
+        // Measurement flags
+        public readonly bool   $isBelowLod  = false,
+        public readonly bool   $isIncluded  = true,
+        public readonly bool   $isTruncated = false,
+
+        // ── Computed scores (ProcostatLabResult) ────────────────────────────
         public readonly ?float  $zScore,
         public readonly ?float  $zPrimeScore,
         public readonly ?float  $zetaScore,
-        public readonly ?float  $enScore,
         public readonly ?float  $biasPercent,
+        public readonly ?float  $enScore      = null,  // not used this year
 
-        // Status
-        public readonly ?string $fitnessStatus,      // 'ok' | 'questionable' | 'discrepant'
-        public readonly ?string $evaluationValidity, // 'valid' | 'below_ld' | 'no_answer' | …
+        // ── Status ──────────────────────────────────────────────────────────
+        public readonly ?string $fitnessStatus     = null,
+        public readonly ?string $evaluationValidity = null,
     ) {}
 
-    /** Serialise to plain array for Node.js JSON payload. */
+    /** Serialise for Node.js JSON payload. */
     public function toArray(): array
     {
         return [
@@ -42,11 +50,14 @@ final class LabResultData
             'activity'            => $this->activity,
             'expandedUncertainty' => $this->expandedUncertainty,
             'detectionLimit'      => $this->detectionLimit,
+            'isBelowLod'          => $this->isBelowLod,
+            'isIncluded'          => $this->isIncluded,
+            'isTruncated'         => $this->isTruncated,
             'zScore'              => $this->zScore,
             'zPrimeScore'         => $this->zPrimeScore,
             'zetaScore'           => $this->zetaScore,
-            'enScore'             => $this->enScore,
             'biasPercent'         => $this->biasPercent,
+            'enScore'             => $this->enScore,
             'fitnessStatus'       => $this->fitnessStatus,
             'evaluationValidity'  => $this->evaluationValidity,
         ];
