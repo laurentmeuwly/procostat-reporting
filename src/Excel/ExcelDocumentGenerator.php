@@ -14,7 +14,6 @@ use PhpOffice\PhpSpreadsheet\Chart\Chart;
 use PhpOffice\PhpSpreadsheet\Chart\DataSeries;
 use PhpOffice\PhpSpreadsheet\Chart\DataSeriesValues;
 use PhpOffice\PhpSpreadsheet\Chart\Layout;
-use PhpOffice\PhpSpreadsheet\Chart\Legend;
 use PhpOffice\PhpSpreadsheet\Chart\PlotArea;
 use PhpOffice\PhpSpreadsheet\Chart\Title;
 use Procorad\ProcostatReporting\Contracts\DocumentGenerator;
@@ -80,21 +79,20 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $dataRef = fn(string $col) => "'{$sheet}'!\${$col}\$2:\${$col}\$" . ($n + 1);
 
             $patchChart = function (ChartDocument $doc, int $chartIndex, string $sheetName) use ($n, $yMax): void {
-                // Error bars reference only real data rows (rows 3..n+2, skip phantoms)
-                $errRef = fn(string $col) => "'{$sheetName}'!\${$col}\$3:\${$col}\$" . ($n + 2);
+                $errRef = fn(string $col) => "'{$sheetName}'!\${$col}\$2:\${$col}\$" . ($n + 1);
                 $doc->chart($chartIndex)
                     ->series(0)  // lab activity — points, error bars, no line
                         ->addErrorBars(ErrorBarDefinition::symmetric($errRef(self::UNCERTAINTY_COL)))
                         ->setMarker(MarkerDefinition::circle('4472C4'))
                         ->setLine(LineDefinition::none())
                     ->series(1)  // assigned value — solid red line, no marker
-                        ->setLine(LineDefinition::solid('FF0000'))
+                        ->setLine(LineDefinition::solid('FF0000', 12700))
                         ->setMarker(MarkerDefinition::none())
                     ->series(2)  // upper uncertainty bound — dashed red, no marker
-                        ->setLine(LineDefinition::dashed('FF0000', 'dash'))
+                        ->setLine(LineDefinition::dashed('FF0000', 'dash', 12700))
                         ->setMarker(MarkerDefinition::none())
                     ->series(3)  // lower uncertainty bound — dashed red, no marker
-                        ->setLine(LineDefinition::dashed('FF0000', 'dash'))
+                        ->setLine(LineDefinition::dashed('FF0000', 'dash', 12700))
                         ->setMarker(MarkerDefinition::none())
                     ->yAxis()
                         ->setScale(AxisScaleDefinition::fromZero($yMax))
@@ -275,17 +273,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $lower    = $assigned !== null && $analysis->assignedUncertainty !== null
             ? $assigned - $analysis->assignedUncertainty : null;
 
-        // Row 2: phantom before — empty label, only D/E/F populated
-        foreach ([null, null, null, $assigned, $upper, $lower] as $ci => $value) {
-            if ($value !== null) {
-                $ws->getCell("{$tableCols[$ci]}2")->setValue($value);
-            }
-        }
-
-        // Real data rows start at row 3
         foreach ($labs as $idx => $lab) {
             /** @var LabResultData $lab */
-            $row    = $idx + 3;
+            $row    = $idx + 2;
             $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
             $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $assigned, $upper, $lower];
 
@@ -302,14 +292,6 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             }
         }
 
-        // Row n+3: phantom after — empty label, only D/E/F populated
-        $phantomAfterRow = $n + 3;
-        foreach ([null, null, null, $assigned, $upper, $lower] as $ci => $value) {
-            if ($value !== null) {
-                $ws->getCell("{$tableCols[$ci]}{$phantomAfterRow}")->setValue($value);
-            }
-        }
-
         // Chart skeleton — PhpSpreadsheet writes the XML structure
         // ChartDocument patches it post-generation (error bars, styles, scale)
         $ws->addChart($this->buildChartSkeleton($ws->getTitle(), $analysis, $n));
@@ -317,33 +299,31 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
     private function buildChartSkeleton(string $sheet, SampleAnalysisData $analysis, int $n): Chart
     {
-        // Rows: 2=phantom_before, 3..n+2=real data, n+3=phantom_after
         $dataRow = 2;
-        $lastRow = $n + 3;
-        $total   = $lastRow - $dataRow + 1;
+        $lastRow = $n + 1;
 
         $xLabels = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
-            "'{$sheet}'!\$A\${$dataRow}:\$A\${$lastRow}", null, $total);
+            "'{$sheet}'!\$A\${$dataRow}:\$A\${$lastRow}", null, $n);
 
         $label1  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ["{$analysis->isotope} Results ({$analysis->sampleCode})"]);
         $values1 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$B\${$dataRow}:\$B\${$lastRow}", null, $total);
+            "'{$sheet}'!\$B\${$dataRow}:\$B\${$lastRow}", null, $n);
 
         $label2  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ['Valeur assignée']);
         $values2 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$D\${$dataRow}:\$D\${$lastRow}", null, $total);
+            "'{$sheet}'!\$D\${$dataRow}:\$D\${$lastRow}", null, $n);
 
         $label3  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ['VA + incertitude']);
         $values3 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$E\${$dataRow}:\$E\${$lastRow}", null, $total);
+            "'{$sheet}'!\$E\${$dataRow}:\$E\${$lastRow}", null, $n);
 
         $label4  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ['VA - incertitude']);
         $values4 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$F\${$dataRow}:\$F\${$lastRow}", null, $total);
+            "'{$sheet}'!\$F\${$dataRow}:\$F\${$lastRow}", null, $n);
 
         $series = new DataSeries(
             DataSeries::TYPE_LINECHART, DataSeries::GROUPING_STANDARD,
@@ -357,7 +337,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $chart = new Chart(
             'results_lab_asc',
             new Title("{$analysis->isotope} Results ({$analysis->sampleCode})"),
-            new Legend(Legend::POSITION_RIGHT, null, false),
+            null, // no legend — removed per client request
             new PlotArea(new Layout(), [$series]),
             true, DataSeries::EMPTY_AS_GAP,
             new Title('Laboratoire'), new Title($analysis->unit),
