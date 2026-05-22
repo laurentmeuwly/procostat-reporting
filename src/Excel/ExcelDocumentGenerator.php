@@ -266,7 +266,10 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             /** @var LabResultData $lab */
             $row    = $idx + 2;
             $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
-            $values = [$lab->labNumber, $lab->activity, $lab->expandedUncertainty, $analysis->assignedValue];
+            // Lab number as string → Excel treats col A as a categorical axis,
+            // which preserves the sheet's row order regardless of the values.
+            // A numeric col A would cause Excel to re-sort points by X coordinate.
+            $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $analysis->assignedValue];
 
             foreach ($values as $ci => $value) {
                 $ws->getCell("{$tableCols[$ci]}{$row}")->setValue($value);
@@ -302,8 +305,12 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $values2 = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
             "'{$sheet}'!\$D\${$dataRow}:\$D\${$lastRow}", null, $n);
 
+        // TYPE_LINECHART with STYLE_MARKER = categorical X axis (equidistant points)
+        // Scatter chart treats X as numeric coordinates → points bunch by lab number value.
+        // Line chart treats X as categories → labels shown as-is, equal spacing guaranteed.
+        // The connecting line is removed via OOXML patch (LineDefinition::none() on each series).
         $series = new DataSeries(
-            DataSeries::TYPE_SCATTERCHART, DataSeries::GROUPING_STANDARD,
+            DataSeries::TYPE_LINECHART, DataSeries::GROUPING_STANDARD,
             range(0, 1),
             [$label1, $label2], [$xLabels, $xLabels], [$values1, $values2],
         );
@@ -331,12 +338,14 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $max = 0.0;
         foreach ($analysis->labResults as $lab) {
             if ($lab->activity !== null && $lab->expandedUncertainty !== null) {
+                // Include the full error bar extent (activity + k=2 uncertainty)
                 $max = max($max, $lab->activity + $lab->expandedUncertainty);
             } elseif ($lab->activity !== null) {
                 $max = max($max, $lab->activity);
             }
         }
-        return $max;
+        // 10% breathing room above the highest error bar tip
+        return $max > 0.0 ? $max * 1.10 : $max;
     }
 
     // ── Stubs ─────────────────────────────────────────────────────────────────

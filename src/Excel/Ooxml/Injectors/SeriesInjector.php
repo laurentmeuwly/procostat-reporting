@@ -51,8 +51,10 @@ final class SeriesInjector
 
         $node = (new ErrorBarBuilder())->build($this->dom, $def);
 
-        // OOXML order: errBars must come after yVal / val
-        XPathHelper::insertAfter($this->serEl, $node, 'yVal');
+        // OOXML: scatter uses <c:yVal>, line chart uses <c:val>
+        // Try yVal first (scatter), fall back to val (line/bar)
+        $afterTag = $this->hasChild('yVal') ? 'yVal' : 'val';
+        XPathHelper::insertAfter($this->serEl, $node, $afterTag);
 
         return $this;
     }
@@ -63,8 +65,9 @@ final class SeriesInjector
 
         $node = (new MarkerBuilder())->build($this->dom, $def);
 
-        // marker comes before xVal in OOXML scatter series
-        XPathHelper::insertBefore($this->serEl, $node, 'xVal');
+        // scatter: <c:xVal> / line: <c:cat> — marker goes before the X reference element
+        $beforeTag = $this->hasChild('xVal') ? 'xVal' : 'cat';
+        XPathHelper::insertBefore($this->serEl, $node, $beforeTag);
 
         return $this;
     }
@@ -75,9 +78,31 @@ final class SeriesInjector
 
         $node = (new LineBuilder())->build($this->dom, $def);
 
-        // spPr comes right after tx (series label) in standard OOXML order
-        XPathHelper::insertBefore($this->serEl, $node, 'marker');
+        // spPr comes before marker (or before cat/xVal if no marker yet)
+        if ($this->hasChild('marker')) {
+            XPathHelper::insertBefore($this->serEl, $node, 'marker');
+        } else {
+            $beforeTag = $this->hasChild('xVal') ? 'xVal' : 'cat';
+            XPathHelper::insertBefore($this->serEl, $node, $beforeTag);
+        }
 
         return $this;
+    }
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Check whether the series element has a direct child with the given local name
+     * in the chart namespace — used to detect scatter vs line chart structure.
+     */
+    private function hasChild(string $localName): bool
+    {
+        foreach ($this->serEl->childNodes as $child) {
+            if ($child instanceof \DOMElement
+                && $child->localName === $localName
+                && $child->namespaceURI === XPathHelper::NS_C) {
+                return true;
+            }
+        }
+        return false;
     }
 }

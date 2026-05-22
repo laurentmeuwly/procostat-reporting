@@ -39,6 +39,13 @@ final class LineBuilder
             $ln->appendChild($solidFill);
         }
 
+        // Dashed line: <a:prstDash val="dash"/> inside <a:ln>
+        if (! $def->noFill && $def->dash !== null) {
+            $prstDash = XPathHelper::createDrawingElement($dom, 'prstDash');
+            $prstDash->setAttribute('val', $def->dash);
+            $ln->appendChild($prstDash);
+        }
+
         $spPr->appendChild($ln);
 
         return $spPr;

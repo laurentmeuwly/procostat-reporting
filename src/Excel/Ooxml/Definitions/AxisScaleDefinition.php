@@ -21,6 +21,36 @@ final readonly class AxisScaleDefinition
 
     public static function fromZero(float $max): self
     {
-        return new self(min: 0.0, max: $max);
+        return new self(min: 0.0, max: self::niceMax($max));
+    }
+
+    /**
+     * Round $value up to a visually clean axis ceiling.
+     *
+     * Examples:
+     *   0.0280 → 0.030   (magnitude 0.01, step 3.0)
+     *   0.0312 → 0.035
+     *   2840   → 3000
+     *   18.7   → 20
+     *
+     * Algorithm: normalise to [1, 10), pick the next "nice" step,
+     * scale back to the original magnitude.
+     */
+    private static function niceMax(float $value): float
+    {
+        if ($value <= 0.0) {
+            return 1.0;
+        }
+
+        $magnitude  = 10 ** floor(log10($value));
+        $normalized = $value / $magnitude;
+
+        foreach ([1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0] as $step) {
+            if ($normalized <= $step) {
+                return $step * $magnitude;
+            }
+        }
+
+        return 10.0 * $magnitude;
     }
 }
