@@ -47,6 +47,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
     private const WHITE      = 'FFFFFF';
     private const GREY_ROW   = 'F2F2F2';
 
+    /** Row at which data tables start on chart sheets (chart occupies A1:P26). */
+    private const TABLE_START_ROW = 28;
+
     // Column C on 'results lab asc' holds uncertainty k=2 — referenced by error bars
     private const UNCERTAINTY_COL = 'C';
 
@@ -55,10 +58,12 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         'results lab asc',   // 1
         'results val asc',   // 2
         'bias',              // 3
-        'zeta_score',        // 4
-        'zprime vs zeta',    // 5 — only when n >= 12
+        'zeta_score',        // 4  — always present
+        'zprime_score',      // 5  — only when n > 12
+        'zprime vs zeta',    // 6  — only when n > 12
     ];
 
+    /** Threshold above which z'-score and z'_score vs zeta charts are added. */
     private const ZPRIME_MIN_POPULATION = 12;
 
     public function format(): string { return 'xlsx'; }
@@ -72,6 +77,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         try {
             $n    = count($analysis->labResults);
             $yMax = $this->computeYMax($analysis);
+            $hasZprime = $n > self::ZPRIME_MIN_POPULATION;
 
             // Step 1 — PhpSpreadsheet generates the base xlsx + chart skeleton
             $this->buildFile($outputPath, $analysis, $data);
@@ -81,7 +87,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $dataRef = fn(string $col) => "'{$sheet}'!\${$col}\$2:\${$col}\$" . ($n + 1);
 
             $patchChart = function (ChartDocument $doc, int $chartIndex, string $sheetName) use ($n, $yMax): void {
-                $errRef = fn(string $col) => "'{$sheetName}'!\${$col}\$2:\${$col}\$" . ($n + 1);
+                $r1 = self::TABLE_START_ROW + 1;
+                $r2 = self::TABLE_START_ROW + $n;
+                $errRef = fn(string $col) => "'{$sheetName}'!\${$col}\${$r1}:\${$col}\${$r2}";
                 $doc->chart($chartIndex)
                     ->series(0)  // lab activity — points, error bars, no line
                         ->addErrorBars(ErrorBarDefinition::symmetric($errRef(self::UNCERTAINTY_COL)))
@@ -104,13 +112,17 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $doc = ChartDocument::open($outputPath);
             $patchChart($doc, 0, self::SHEETS[1]); // results lab asc
             $patchChart($doc, 1, self::SHEETS[2]); // results val asc
-            $this->patchBarChart($doc, 2, self::SHEETS[3]); // bias
-            $this->patchBarChart($doc, 3, self::SHEETS[4]); // zeta_score
-            // zprime vs zeta scatter — no additional OOXML patch needed (scatter is native)
-            // chart index 4 only exists if n >= ZPRIME_MIN_POPULATION
-            if ($n >= self::ZPRIME_MIN_POPULATION) {
-                $this->patchZprimeVsZetaChart($doc, 4, axisMax: 4.0);
+            $this->patchBarChart($doc, 2, self::SHEETS[3], showThresholds: false); // bias
+            $this->patchBarChart($doc, 3, self::SHEETS[4], showThresholds: true);  // zeta_score
+
+            if ($hasZprime) {
+                $this->patchBarChart($doc, 4, self::SHEETS[5], showThresholds: true); // zprime_score
+                $this->patchZprimeVsZetaChart($doc, 5, axisMax: 4.0);               // zprime vs zeta
             }
+
+            // Repair drawing XML for Excel compatibility (PhpSpreadsheet sometimes
+            // generates incomplete xdr:twoCellAnchor entries that Excel rejects)
+            $this->repairExcelDrawings($outputPath);
 
         } catch (\Throwable $e) {
             throw ReportGenerationException::fromThrowable($this->format(), $e);
@@ -132,6 +144,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             ->setTitle("{$data->year}_{$data->icCode}_{$analysis->sampleCode}_{$analysis->isotope}")
             ->setCreator('procostat-reporting');
 
+        $n = count($analysis->labResults);
+        $hasZprime = $n > self::ZPRIME_MIN_POPULATION;
+
         $ws = $spreadsheet->getActiveSheet();
         $ws->setTitle(self::SHEETS[0]);
         $this->buildProcostatDataSheet($ws, $analysis, $data);
@@ -146,15 +161,19 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
         $wsBias = $spreadsheet->createSheet();
         $wsBias->setTitle(self::SHEETS[3]);
-        $this->buildBarSheet($wsBias, $analysis, field: 'biasPercent', yLabel: '%');
+        $this->buildBarSheet($wsBias, $analysis, field: 'biasPercent', yLabel: '%', showThresholdLines: false);
 
         $wsZeta = $spreadsheet->createSheet();
         $wsZeta->setTitle(self::SHEETS[4]);
-        $this->buildBarSheet($wsZeta, $analysis, field: 'zetaScore', yLabel: 'Zeta');
+        $this->buildBarSheet($wsZeta, $analysis, field: 'zetaScore', yLabel: 'Zeta', showThresholdLines: true);
 
-        if (count($analysis->labResults) >= self::ZPRIME_MIN_POPULATION) {
+        if ($hasZprime) {
+            $wsZprime = $spreadsheet->createSheet();
+            $wsZprime->setTitle(self::SHEETS[5]);
+            $this->buildBarSheet($wsZprime, $analysis, field: 'zPrimeScore', yLabel: "Z'", showThresholdLines: true);
+
             $wsZpZeta = $spreadsheet->createSheet();
-            $wsZpZeta->setTitle(self::SHEETS[5]);
+            $wsZpZeta->setTitle(self::SHEETS[6]);
             $this->buildZprimeVsZetaSheet($wsZpZeta, $analysis);
         }
 
@@ -294,15 +313,17 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $labs = collect($analysis->labResults)->sortBy($sortBy)->values()->all();
         $n    = count($labs);
 
+        // Chart sits in A1:P26 — table starts at row TABLE_START_ROW
+        $headerRow = self::TABLE_START_ROW;
+
         // A=label, B=activity, C=uncertainty k2, D=assigned, E=upper, F=lower
-        // Phantom rows 2 and n+3 extend assigned-value lines beyond first/last lab.
         $headers     = ['LAB N°', "ACTIVITÉ ({$analysis->unit})", "INCERTITUDE k=2 ({$analysis->unit})", "VALEUR ASSIGNÉE ({$analysis->unit})", "VA + INCERT.", "VA - INCERT."];
         $tableCols   = ['A', 'B', 'C', 'D', 'E', 'F'];
         $tableWidths = [10,  22,   26,   24,   14,   14];
 
         foreach ($headers as $i => $header) {
-            $ws->getCell("{$tableCols[$i]}1")->setValue($header);
-            $ws->getStyle("{$tableCols[$i]}1")->applyFromArray([
+            $ws->getCell("{$tableCols[$i]}{$headerRow}")->setValue($header);
+            $ws->getStyle("{$tableCols[$i]}{$headerRow}")->applyFromArray([
                 'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
                 'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER, 'wrapText' => true],
@@ -310,7 +331,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             ]);
             $ws->getColumnDimension($tableCols[$i])->setWidth($tableWidths[$i]);
         }
-        $ws->getRowDimension(1)->setRowHeight(32);
+        $ws->getRowDimension($headerRow)->setRowHeight(32);
 
         $assigned = $analysis->assignedValue;
         $upper    = $assigned !== null && $analysis->assignedUncertainty !== null
@@ -320,7 +341,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
         foreach ($labs as $idx => $lab) {
             /** @var LabResultData $lab */
-            $row    = $idx + 2;
+            $row    = $headerRow + 1 + $idx;
             $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
             $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $assigned, $upper, $lower];
 
@@ -344,8 +365,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
     private function buildChartSkeleton(string $sheet, SampleAnalysisData $analysis, int $n): Chart
     {
-        $dataRow = 2;
-        $lastRow = $n + 1;
+        // Data is now at TABLE_START_ROW+1 .. TABLE_START_ROW+n
+        $dataRow = self::TABLE_START_ROW + 1;
+        $lastRow = self::TABLE_START_ROW + $n;
 
         $xLabels = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             "'{$sheet}'!\$A\${$dataRow}:\$A\${$lastRow}", null, $n);
@@ -388,8 +410,9 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             new Title('Laboratoire'), new Title($analysis->unit),
         );
 
-        $chart->setTopLeftPosition('F1');
-        $chart->setBottomRightPosition('T26');
+        // Chart in A1:P26 — table below from row TABLE_START_ROW
+        $chart->setTopLeftPosition('A1');
+        $chart->setBottomRightPosition('P26');
 
         return $chart;
     }
@@ -416,39 +439,53 @@ final class ExcelDocumentGenerator implements DocumentGenerator
     /**
      * Build a data sheet + bar chart skeleton for a score field.
      *
-     * Columns: A = lab number (string), B = score value
-     * Chart skeleton: simple barChart — OOXML patcher applies uniform colour.
+     * Chart sits in A1:P26 — data table starts at TABLE_START_ROW.
+     * When showThresholdLines=true, reference line data is stored in cols C-F
+     * (rows TABLE_START_ROW+1 to TABLE_START_ROW+2) for OOXML patching.
      *
-     * @param string $field  Property name on LabResultData: 'biasPercent' | 'zetaScore'
+     * @param string $field  Property name on LabResultData: 'biasPercent' | 'zetaScore' | 'zPrimeScore'
      */
     private function buildBarSheet(
         Worksheet          $ws,
         SampleAnalysisData $analysis,
         string             $field,
         string             $yLabel,
+        bool               $showThresholdLines = false,
     ): void {
         $labs = collect($analysis->labResults)->sortBy($field)->values()->all();
         $n    = count($labs);
 
+        $headerRow = self::TABLE_START_ROW;
+        $firstData = $headerRow + 1;
+        $lastData  = $headerRow + $n;
+
+        // ── Column widths ─────────────────────────────────────────────────────
+        $ws->getColumnDimension('A')->setWidth(10);
+        $ws->getColumnDimension('B')->setWidth(16);
+        // Extra cols for threshold line data (hidden chart series, score sheets only)
+        if ($showThresholdLines) {
+            foreach (['C','D','E','F'] as $col) {
+                $ws->getColumnDimension($col)->setWidth(8);
+            }
+        }
+
         // ── Table header ──────────────────────────────────────────────────────
         foreach (['LAB N°', $yLabel] as $ci => $header) {
             $col = ['A', 'B'][$ci];
-            $ws->getCell("{$col}1")->setValue($header);
-            $ws->getStyle("{$col}1")->applyFromArray([
+            $ws->getCell("{$col}{$headerRow}")->setValue($header);
+            $ws->getStyle("{$col}{$headerRow}")->applyFromArray([
                 'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
                 'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
                 'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],
             ]);
         }
-        $ws->getColumnDimension('A')->setWidth(10);
-        $ws->getColumnDimension('B')->setWidth(16);
-        $ws->getRowDimension(1)->setRowHeight(28);
+        $ws->getRowDimension($headerRow)->setRowHeight(28);
 
         // ── Data rows ─────────────────────────────────────────────────────────
         foreach ($labs as $idx => $lab) {
             /** @var LabResultData $lab */
-            $row   = $idx + 2;
+            $row   = $firstData + $idx;
             $bg    = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
             $value = $lab->{$field} ?? null;
 
@@ -465,16 +502,35 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             }
         }
 
+        // ── Threshold reference line data (score charts only) ─────────────────
+        // We add 4 horizontal line series as two-point scatter overlays:
+        //   C = X coordinates (always first and last lab, so 1..n)
+        //   D = Y = 0         (centre / reference line — solid red)
+        //   E = Y = +2        (warning upper — dashed red)
+        //   F = Y = -2        (warning lower — dashed red)
+        // Rows firstData and lastData hold the two endpoints for each line.
+        // The bar chart will be extended in OOXML with these series.
+        if ($showThresholdLines) {
+            // Two-point rows: first point = row firstData, second = row lastData
+            $ws->getCell("C{$firstData}")->setValue(1);
+            $ws->getCell("C{$lastData}")->setValue($n);
+            $ws->getCell("D{$firstData}")->setValue(0.0);
+            $ws->getCell("D{$lastData}")->setValue(0.0);
+            $ws->getCell("E{$firstData}")->setValue(2.0);
+            $ws->getCell("E{$lastData}")->setValue(2.0);
+            $ws->getCell("F{$firstData}")->setValue(-2.0);
+            $ws->getCell("F{$lastData}")->setValue(-2.0);
+        }
+
         // ── Bar chart skeleton ────────────────────────────────────────────────
         $sheet   = $ws->getTitle();
-        $lastRow = $n + 1;
 
         $xLabels = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
-            "'{$sheet}'!\$A\$2:\$A\${$lastRow}", null, $n);
+            "'{$sheet}'!\$A\${$firstData}:\$A\${$lastData}", null, $n);
         $label   = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, [$yLabel]);
         $values  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$B\$2:\$B\${$lastRow}", null, $n);
+            "'{$sheet}'!\$B\${$firstData}:\$B\${$lastData}", null, $n);
 
         $series = new DataSeries(
             DataSeries::TYPE_BARCHART,
@@ -493,8 +549,10 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             new Title('Laboratoire'),
             new Title($yLabel),
         );
-        $chart->setTopLeftPosition('D1');
-        $chart->setBottomRightPosition('R26');
+
+        // Chart in A1:P26 — table below from TABLE_START_ROW
+        $chart->setTopLeftPosition('A1');
+        $chart->setBottomRightPosition('P26');
 
         $ws->addChart($chart);
     }
@@ -529,23 +587,25 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $ws->getColumnDimension($col)->setWidth(8);
         }
 
-        // ── Table header (A1:C1) ──────────────────────────────────────────────
+        // ── Table header (TABLE_START_ROW) ────────────────────────────────────
+        $headerRow = self::TABLE_START_ROW;
         foreach (['LAB N°', "Z'-SCORE", 'ZETA-SCORE'] as $ci => $header) {
             $col = ['A', 'B', 'C'][$ci];
-            $ws->getCell("{$col}1")->setValue($header);
-            $ws->getStyle("{$col}1")->applyFromArray([
+            $ws->getCell("{$col}{$headerRow}")->setValue($header);
+            $ws->getStyle("{$col}{$headerRow}")->applyFromArray([
                 'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
                 'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
                 'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],
             ]);
         }
-        $ws->getRowDimension(1)->setRowHeight(28);
+        $ws->getRowDimension($headerRow)->setRowHeight(28);
 
-        // ── Lab data rows (A2:C{n+1}) ─────────────────────────────────────────
+        // ── Lab data rows ─────────────────────────────────────────────────────
+        $firstData = $headerRow + 1;
         foreach ($labs as $idx => $lab) {
             /** @var LabResultData $lab */
-            $row = $idx + 2;
+            $row = $firstData + $idx;
             $bg  = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
             $ws->getCell("A{$row}")->setValue((string) $lab->labNumber);
             $ws->getCell("B{$row}")->setValue($lab->zPrimeScore);
@@ -560,31 +620,34 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             }
         }
 
-        // ── Threshold line data in cells (rows 2-3, cols D..K) ───────────────
+        // ── Threshold line data in cells (after data, cols D..K) ─────────────
         // Each vertical line  = (fixed_x, fixed_x) with Y = (-axisMax, +axisMax)
         // Each horizontal line = (fixed_y, fixed_y) with X = (-axisMax, +axisMax)
-        // Layout: D=x_col1, E=y_col1, F=x_col2, G=y_col2, ... (4 lines × 2 cols)
-        // Rows 2-3 hold the 2-point coordinates for each threshold line.
+        // Two rows: t1 = firstData row, t2 = firstData+1 row (chart data source)
+        // These are in hidden cols D..K, below the chart area (row >= TABLE_START_ROW)
         //
-        // Col pairs:   D/E = x=+2   F/G = x=-2   H/I = x=+3   J/K = x=-3
-        //              then rows 4-5 for horizontal lines (reuse same cols):
-        // Col pairs:   D/E = y=+2   F/G = y=-2   H/I = y=+3   J/K = y=-3
+        // Col pairs:   D/E = x=+2   F/G = x=-2   H/I = x=+3   J/K = x=-3 (vertical)
+        //              D/E = y=+2   F/G = y=-2   H/I = y=+3   J/K = y=-3 (horizontal, +2 rows)
+        $t1 = $firstData;
+        $t2 = $firstData + 1;
+        $t3 = $firstData + 2;
+        $t4 = $firstData + 3;
 
         $threshData = [
-            // [xStart, yStart, xEnd, yEnd]  — vertical lines (rows 2-3)
+            // vertical lines — rows t1, t2
             ['D', 'E',  2,      2,     -$axisMax, $axisMax],  // x=+2
             ['F', 'G', -2,     -2,     -$axisMax, $axisMax],  // x=-2
             ['H', 'I',  3,      3,     -$axisMax, $axisMax],  // x=+3
             ['J', 'K', -3,     -3,     -$axisMax, $axisMax],  // x=-3
         ];
         foreach ($threshData as [$xCol, $yCol, $x1, $x2, $y1, $y2]) {
-            $ws->getCell("{$xCol}2")->setValue($x1);
-            $ws->getCell("{$xCol}3")->setValue($x2);
-            $ws->getCell("{$yCol}2")->setValue($y1);
-            $ws->getCell("{$yCol}3")->setValue($y2);
+            $ws->getCell("{$xCol}{$t1}")->setValue($x1);
+            $ws->getCell("{$xCol}{$t2}")->setValue($x2);
+            $ws->getCell("{$yCol}{$t1}")->setValue($y1);
+            $ws->getCell("{$yCol}{$t2}")->setValue($y2);
         }
 
-        // Horizontal lines in rows 4-5 (reuse same col pairs)
+        // Horizontal lines — rows t3, t4
         $horizData = [
             ['D', 'E', -$axisMax, $axisMax,  2,  2],   // y=+2
             ['F', 'G', -$axisMax, $axisMax, -2, -2],   // y=-2
@@ -592,14 +655,14 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             ['J', 'K', -$axisMax, $axisMax, -3, -3],   // y=-3
         ];
         foreach ($horizData as [$xCol, $yCol, $x1, $x2, $y1, $y2]) {
-            $ws->getCell("{$xCol}4")->setValue($x1);
-            $ws->getCell("{$xCol}5")->setValue($x2);
-            $ws->getCell("{$yCol}4")->setValue($y1);
-            $ws->getCell("{$yCol}5")->setValue($y2);
+            $ws->getCell("{$xCol}{$t3}")->setValue($x1);
+            $ws->getCell("{$xCol}{$t4}")->setValue($x2);
+            $ws->getCell("{$yCol}{$t3}")->setValue($y1);
+            $ws->getCell("{$yCol}{$t4}")->setValue($y2);
         }
 
         // ── Chart series ──────────────────────────────────────────────────────
-        $lastRow = $n + 1;
+        $lastData  = self::TABLE_START_ROW + $n;
 
         $labels  = [];
         $xSeries = [];
@@ -610,29 +673,29 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
             null, null, 1, ["{$analysis->isotope} ({$analysis->sampleCode})"]);
         $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$B\$2:\$B\${$lastRow}", null, $n);
+            "'{$sheet}'!\$B\${$firstData}:\$B\${$lastData}", null, $n);
         $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-            "'{$sheet}'!\$C\$2:\$C\${$lastRow}", null, $n);
+            "'{$sheet}'!\$C\${$firstData}:\$C\${$lastData}", null, $n);
         $orders[]  = 0;
 
-        // Series 1-4 — vertical threshold lines (cell-referenced, STYLE_LINE)
+        // Series 1-4 — vertical threshold lines (cell-referenced, rows t1/t2)
         $vertCols = [['D','E'], ['F','G'], ['H','I'], ['J','K']];
         foreach ($vertCols as $si => [$xCol, $yCol]) {
             $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, null, null, 1, ['']);
             $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-                "'{$sheet}'!\${$xCol}\$2:\${$xCol}\$3", null, 2);
+                "'{$sheet}'!\${$xCol}\${$t1}:'{$sheet}'!\${$xCol}\${$t2}", null, 2);
             $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-                "'{$sheet}'!\${$yCol}\$2:\${$yCol}\$3", null, 2);
+                "'{$sheet}'!\${$yCol}\${$t1}:'{$sheet}'!\${$yCol}\${$t2}", null, 2);
             $orders[]  = $si + 1;
         }
 
-        // Series 5-8 — horizontal threshold lines (rows 4-5)
+        // Series 5-8 — horizontal threshold lines (rows t3/t4)
         foreach ($vertCols as $si => [$xCol, $yCol]) {
             $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, null, null, 1, ['']);
             $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-                "'{$sheet}'!\${$xCol}\$4:\${$xCol}\$5", null, 2);
+                "'{$sheet}'!\${$xCol}\${$t3}:'{$sheet}'!\${$xCol}\${$t4}", null, 2);
             $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
-                "'{$sheet}'!\${$yCol}\$4:\${$yCol}\$5", null, 2);
+                "'{$sheet}'!\${$yCol}\${$t3}:'{$sheet}'!\${$yCol}\${$t4}", null, 2);
             $orders[]  = $si + 5;
         }
 
@@ -659,8 +722,8 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             new Title("Z'-score"),
             new Title('Zeta-score'),
         );
-        $chart->setTopLeftPosition('M1');
-        $chart->setBottomRightPosition('Z26');
+        $chart->setTopLeftPosition('A1');
+        $chart->setBottomRightPosition('P26');
         $ws->addChart($chart);
     }
 
@@ -752,20 +815,280 @@ final class ExcelDocumentGenerator implements DocumentGenerator
     }
 
     /**
-     * OOXML patch for bar charts: uniform blue fill on all bars (no colour-by-score),
-     * no threshold lines, explicit Y-axis scaling symmetric around 0.
+     * Fix Excel compatibility issue with drawings.
+     *
+     * PhpSpreadsheet may generate xl/drawings/drawingN.xml files that contain
+     * chart anchors without a proper <xdr:graphicFrame> wrapper, or that reference
+     * charts via relationships that Excel cannot validate. Excel silently removes
+     * the offending drawing part on open.
+     *
+     * This method iterates all drawing files in the xlsx and ensures that each
+     * <xdr:twoCellAnchor> containing a chart reference is a valid graphicFrame.
+     * If PhpSpreadsheet generated a bare <xdr:sp> or an empty anchor instead of
+     * <xdr:graphicFrame>, we rebuild the anchor from the chart relationship.
+     *
+     * Additionally ensures [Content_Types].xml has the correct Override entries
+     * for all chart drawing parts, which Excel requires but LibreOffice ignores.
      */
-    private function patchBarChart(ChartDocument $doc, int $chartIndex, string $sheetName): void
+    private function repairExcelDrawings(string $xlsxPath): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($xlsxPath) !== true) return;
+
+        $modified = false;
+
+        // Find all drawing XML files
+        $drawingFiles = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (preg_match('#^xl/drawings/drawing\d+\.xml$#', $name)) {
+                $drawingFiles[] = $name;
+            }
+        }
+
+        foreach ($drawingFiles as $drawingFile) {
+            $xml = $zip->getFromName($drawingFile);
+            if ($xml === false) continue;
+
+            // Find the relationship file for this drawing
+            $drawingName = basename($drawingFile); // e.g. drawing6.xml
+            $relFile = 'xl/drawings/_rels/' . $drawingName . '.rels';
+            $relXml  = $zip->getFromName($relFile);
+
+            if ($relXml === false) continue;
+
+            // Parse relationships to find chart references
+            $relDom = new \DOMDocument();
+            if (! @$relDom->loadXML($relXml)) continue;
+
+            $relXpath = new \DOMXPath($relDom);
+            $relXpath->registerNamespace('r', 'http://schemas.openxmlformats.org/package/2006/relationships');
+
+            $chartRels = $relXpath->query('//r:Relationship[@Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"]');
+            if ($chartRels === false || $chartRels->length === 0) continue;
+
+            // Parse the drawing XML
+            $dom = new \DOMDocument();
+            $dom->preserveWhiteSpace = false;
+            $dom->formatOutput = false;
+            if (! @$dom->loadXML($xml)) continue;
+
+            $xp = new \DOMXPath($dom);
+            $xp->registerNamespace('xdr', 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing');
+            $xp->registerNamespace('a',   'http://schemas.openxmlformats.org/drawingml/2006/main');
+            $xp->registerNamespace('r',   'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+            $xp->registerNamespace('c',   'http://schemas.openxmlformats.org/drawingml/2006/chart');
+
+            // Check each anchor: if it contains a graphicFrame with a chart reference, it's valid.
+            // If it's missing or malformed (no xdr:graphicFrame), we flag it.
+            $anchors = $xp->query('//xdr:twoCellAnchor');
+            if ($anchors === false) continue;
+
+            $needsRebuild = false;
+            foreach ($anchors as $anchor) {
+                $graphicFrames = $xp->query('xdr:graphicFrame', $anchor);
+                if ($graphicFrames === false || $graphicFrames->length === 0) {
+                    $needsRebuild = true;
+                    break;
+                }
+            }
+
+            if (! $needsRebuild) continue;
+
+            // Rebuild drawing XML: for each chart relationship, create a proper
+            // twoCellAnchor with graphicFrame. Use generic positions (A1:P26).
+            $ns  = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+            $ans = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+            $rns = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+            $newDom = new \DOMDocument('1.0', 'UTF-8');
+            $root   = $newDom->createElementNS($ns, 'xdr:wsDr');
+            $root->setAttribute('xmlns:a',   $ans);
+            $root->setAttribute('xmlns:r',   $rns);
+            $root->setAttribute('xmlns:xdr', $ns);
+            $newDom->appendChild($root);
+
+            foreach ($chartRels as $idx => $rel) {
+                $rId    = $rel->getAttribute('Id');
+                $anchor = $newDom->createElementNS($ns, 'xdr:twoCellAnchor');
+                $anchor->setAttribute('editAs', 'oneCell');
+
+                // from: A1 (col=0, row=0)
+                $from = $newDom->createElementNS($ns, 'xdr:from');
+                foreach (['xdr:col' => '0', 'xdr:colOff' => '0', 'xdr:row' => '0', 'xdr:rowOff' => '0'] as $tag => $val) {
+                    $el = $newDom->createElementNS($ns, $tag, $val);
+                    $from->appendChild($el);
+                }
+
+                // to: P26 (col=15, row=25)
+                $to = $newDom->createElementNS($ns, 'xdr:to');
+                foreach (['xdr:col' => '15', 'xdr:colOff' => '0', 'xdr:row' => '25', 'xdr:rowOff' => '0'] as $tag => $val) {
+                    $el = $newDom->createElementNS($ns, $tag, $val);
+                    $to->appendChild($el);
+                }
+
+                // graphicFrame
+                $gf  = $newDom->createElementNS($ns, 'xdr:graphicFrame');
+                $gf->setAttribute('macro', '');
+                $nvGf = $newDom->createElementNS($ns, 'xdr:nvGraphicFramePr');
+                $cNvPr = $newDom->createElementNS($ns, 'xdr:cNvPr');
+                $cNvPr->setAttribute('id',   (string)(2 + $idx));
+                $cNvPr->setAttribute('name', 'Chart ' . $idx);
+                $cNvGfPr = $newDom->createElementNS($ns, 'xdr:cNvGraphicFramePr');
+                $nvGf->appendChild($cNvPr);
+                $nvGf->appendChild($cNvGfPr);
+
+                $xfrm = $newDom->createElementNS($ns, 'xdr:xfrm');
+                $off  = $newDom->createElementNS($ans, 'a:off');
+                $off->setAttribute('x', '0'); $off->setAttribute('y', '0');
+                $ext  = $newDom->createElementNS($ans, 'a:ext');
+                $ext->setAttribute('cx', '0'); $ext->setAttribute('cy', '0');
+                $xfrm->appendChild($off); $xfrm->appendChild($ext);
+
+                $graphic = $newDom->createElementNS($ans, 'a:graphic');
+                $gData   = $newDom->createElementNS($ans, 'a:graphicData');
+                $gData->setAttribute('uri', 'http://schemas.openxmlformats.org/drawingml/2006/chart');
+                $cChart  = $newDom->createElementNS('http://schemas.openxmlformats.org/drawingml/2006/chart', 'c:chart');
+                $cChart->setAttributeNS($rns, 'r:id', $rId);
+                $gData->appendChild($cChart);
+                $graphic->appendChild($gData);
+
+                $gf->appendChild($nvGf);
+                $gf->appendChild($xfrm);
+                $gf->appendChild($graphic);
+
+                $clientData = $newDom->createElementNS($ns, 'xdr:clientData');
+
+                $anchor->appendChild($from);
+                $anchor->appendChild($to);
+                $anchor->appendChild($gf);
+                $anchor->appendChild($clientData);
+                $root->appendChild($anchor);
+            }
+
+            $zip->addFromString($drawingFile, $newDom->saveXML());
+            $modified = true;
+        }
+
+        $zip->close();
+    }
+
+    /**
+     * OOXML patch for bar charts.
+     *
+     * When showThresholds=true (zeta_score, zprime_score), injects reference lines
+     * by patching the chart XML directly:
+     *   - solid red line at Y=0   (assigned value reference)
+     *   - dashed red line at Y=+2 (warning upper)
+     *   - dashed red line at Y=-2 (warning lower)
+     *
+     * These are added as <c:ser> line series appended to the barChart via a
+     * secondary lineChart plotted on the same axes — the only reliable OOXML
+     * approach for overlay reference lines on bar charts.
+     */
+    private function patchBarChart(ChartDocument $doc, int $chartIndex, string $sheetName, bool $showThresholds = false): void
     {
         try {
             $doc->chart($chartIndex)
                 ->series(0)
-                    ->setLine(LineDefinition::solid('4472C4', 0))  // thin border, same blue
+                    ->setLine(LineDefinition::solid('4472C4', 0))
                     ->setMarker(MarkerDefinition::none())
                 ->save();
+
+            if ($showThresholds) {
+                $this->injectBarChartReferenceLines($doc->getXlsxPath(), $chartIndex, $sheetName);
+            }
         } catch (\InvalidArgumentException) {
             // Chart index out of range — skip silently
         }
+    }
+
+    /**
+     * Inject reference lines into a bar chart by appending a lineChart block
+     * to the chart XML alongside the existing barChart.
+     *
+     * Uses cols C (x-coord), D (y=0), E (y=+2), F (y=-2) at TABLE_START_ROW+1
+     * and TABLE_START_ROW+n (the two-point row pair written by buildBarSheet).
+     *
+     * Line series:
+     *   - y=0  : solid red       (assigned/centre reference)
+     *   - y=+2 : dashed red      (warning upper, e.g. |z|=2)
+     *   - y=-2 : dashed red      (warning lower)
+     */
+    private function injectBarChartReferenceLines(string $xlsxPath, int $chartIndex, string $sheetName): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($xlsxPath) !== true) return;
+
+        $keys = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (preg_match('#^xl/charts/chart\d+\.xml$#', $name)) {
+                $keys[] = $name;
+            }
+        }
+        sort($keys);
+
+        if (! isset($keys[$chartIndex])) { $zip->close(); return; }
+
+        $xml = $zip->getFromName($keys[$chartIndex]);
+
+        // Row references: buildBarSheet writes two-point data at firstData and lastData.
+        // We use a wide range (TABLE_START_ROW+1 .. TABLE_START_ROW+100) and rely on
+        // EMPTY_AS_GAP — only the two populated rows will contribute to the line.
+        $r1Str = (string)(self::TABLE_START_ROW + 1);
+        $r2Str = (string)(self::TABLE_START_ROW + 100);
+        $esc_  = $sheetName;
+
+        $makeLineSer = function (int $idx, string $col, string $color, string $dash) use ($r1Str, $r2Str, $esc_): string {
+            $dashXml = $dash === 'solid' ? '' : "<a:prstDash val=\"{$dash}\"/>";
+            return
+                "<c:ser>" .
+                "<c:idx val=\"{$idx}\"/><c:order val=\"{$idx}\"/>" .
+                "<c:spPr><a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"{$color}\"/></a:solidFill>{$dashXml}</a:ln></c:spPr>" .
+                "<c:marker><c:symbol val=\"none\"/></c:marker>" .
+                "<c:val><c:numRef><c:f>'{$esc_}'!\${$col}\${$r1Str}:'{$esc_}'!\${$col}\${$r2Str}</c:f></c:numRef></c:val>" .
+                "</c:ser>";
+        };
+
+        // Build a lineChart block to overlay on the barChart
+        // Axis IDs (200/201) must differ from the barChart axes to avoid conflicts.
+        $lineChartXml =
+            "<c:lineChart>" .
+            "<c:grouping val=\"standard\"/>" .
+            $makeLineSer(1, 'D', 'FF0000', 'solid') .  // y=0 solid red
+            $makeLineSer(2, 'E', 'FF0000', 'dash')  .  // y=+2 dashed
+            $makeLineSer(3, 'F', 'FF0000', 'dash')  .  // y=-2 dashed
+            "<c:axId val=\"200\"/><c:axId val=\"201\"/>" .
+            "</c:lineChart>";
+
+        // Inject after the closing </c:barChart> tag, before </c:plotArea>
+        // Also add two axis definitions for the line overlay (share same plot area)
+        $axesXml =
+            "<c:valAx>" .
+            "<c:axId val=\"201\"/>" .
+            "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>" .
+            "<c:delete val=\"1\"/>" .  // hidden axis
+            "<c:axPos val=\"l\"/>" .
+            "<c:crossAx val=\"200\"/>" .
+            "</c:valAx>" .
+            "<c:catAx>" .
+            "<c:axId val=\"200\"/>" .
+            "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>" .
+            "<c:delete val=\"1\"/>" .
+            "<c:axPos val=\"b\"/>" .
+            "<c:crossAx val=\"201\"/>" .
+            "</c:catAx>";
+
+        // Insert lineChart + hidden axes before </c:plotArea>
+        $xml = str_replace(
+            '</c:plotArea>',
+            $lineChartXml . $axesXml . '</c:plotArea>',
+            $xml
+        );
+
+        $zip->addFromString($keys[$chartIndex], $xml);
+        $zip->close();
     }
 
     // ── Stubs ─────────────────────────────────────────────────────────────────
