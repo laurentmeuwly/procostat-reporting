@@ -56,6 +56,11 @@ final class ChartDocument
         return new self($xlsxPath);
     }
 
+    public function getXlsxPath(): string
+    {
+        return $this->xlsxPath;
+    }
+
     // ── Chart selector ────────────────────────────────────────────────────────
 
     /**

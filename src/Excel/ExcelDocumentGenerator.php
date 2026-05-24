@@ -51,13 +51,15 @@ final class ExcelDocumentGenerator implements DocumentGenerator
     private const UNCERTAINTY_COL = 'C';
 
     private const SHEETS = [
-        'procostat data',
-        'results lab asc',
-        'results val asc',
-        'bias',
-        'zprime_score',
-        'zeta_score',
+        'procostat data',    // 0
+        'results lab asc',   // 1
+        'results val asc',   // 2
+        'bias',              // 3
+        'zeta_score',        // 4
+        'zprime vs zeta',    // 5 — only when n >= 12
     ];
+
+    private const ZPRIME_MIN_POPULATION = 12;
 
     public function format(): string { return 'xlsx'; }
 
@@ -102,6 +104,13 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             $doc = ChartDocument::open($outputPath);
             $patchChart($doc, 0, self::SHEETS[1]); // results lab asc
             $patchChart($doc, 1, self::SHEETS[2]); // results val asc
+            $this->patchBarChart($doc, 2, self::SHEETS[3]); // bias
+            $this->patchBarChart($doc, 3, self::SHEETS[4]); // zeta_score
+            // zprime vs zeta scatter — no additional OOXML patch needed (scatter is native)
+            // chart index 4 only exists if n >= ZPRIME_MIN_POPULATION
+            if ($n >= self::ZPRIME_MIN_POPULATION) {
+                $this->patchZprimeVsZetaChart($doc, 4, axisMax: 4.0);
+            }
 
         } catch (\Throwable $e) {
             throw ReportGenerationException::fromThrowable($this->format(), $e);
@@ -135,10 +144,18 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $wsResultsVal->setTitle(self::SHEETS[2]);
         $this->buildResultsSheet($wsResultsVal, $analysis, sortBy: 'activity');
 
-        foreach (array_slice(self::SHEETS, 3) as $sheetName) {
-            $stub = $spreadsheet->createSheet();
-            $stub->setTitle($sheetName);
-            $this->buildStubSheet($stub, $sheetName);
+        $wsBias = $spreadsheet->createSheet();
+        $wsBias->setTitle(self::SHEETS[3]);
+        $this->buildBarSheet($wsBias, $analysis, field: 'biasPercent', yLabel: '%');
+
+        $wsZeta = $spreadsheet->createSheet();
+        $wsZeta->setTitle(self::SHEETS[4]);
+        $this->buildBarSheet($wsZeta, $analysis, field: 'zetaScore', yLabel: 'Zeta');
+
+        if (count($analysis->labResults) >= self::ZPRIME_MIN_POPULATION) {
+            $wsZpZeta = $spreadsheet->createSheet();
+            $wsZpZeta->setTitle(self::SHEETS[5]);
+            $this->buildZprimeVsZetaSheet($wsZpZeta, $analysis);
         }
 
         $spreadsheet->setActiveSheetIndex(0);
@@ -189,12 +206,19 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $tableStart = $metaStart + count($metaRows) + 3;
         $hasZprime  = count($analysis->labResults) >= 12;
 
+        // Columns: fixed + optional z' + zeta + exclusion (always last)
         $headers   = ['LAB N°', "ACTIVITÉ\n{$analysis->unit}", "INCERTITUDE\n(k=2) {$analysis->unit}", "LD\n{$analysis->unit}", "BIAIS\n%", "Z-SCORE"];
         $cols      = ['A', 'B', 'C', 'D', 'E', 'F'];
         $colWidths = [10,  18,   20,   14,  10,  12];
 
         if ($hasZprime) { $headers[] = "Z'-SCORE"; $cols[] = 'G'; $colWidths[] = 12; }
         $headers[] = "ZETA\nSCORE"; $cols[] = $hasZprime ? 'H' : 'G'; $colWidths[] = 12;
+
+        // "Exclu des stats" — always the last column
+        $headers[]      = "EXCLU\nDES STATS";
+        $exclCol        = $hasZprime ? 'I' : 'H';
+        $cols[]         = $exclCol;
+        $colWidths[]    = 22;
 
         foreach ($headers as $i => $header) {
             $ws->getCell("{$cols[$i]}{$tableStart}")->setValue($header);
@@ -213,8 +237,14 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $zetaColIdx   = $hasZprime ? 7 : 6;
 
         foreach ($analysis->labResults as $idx => $lab) {
-            $row    = $tableStart + 1 + $idx;
-            $bg     = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
+            $row       = $tableStart + 1 + $idx;
+            $isExcluded = ! $lab->isIncluded || $lab->isTruncated;
+
+            // Excluded/truncated rows get a light yellow background to stand out
+            $bg = $isExcluded
+                ? 'FFFDE7'   // light amber — excluded
+                : (($idx % 2 === 0) ? self::GREY_ROW : self::WHITE);
+
             $values = [
                 $lab->labNumber,
                 self::sciOrEmpty($lab->activity),
@@ -225,20 +255,35 @@ final class ExcelDocumentGenerator implements DocumentGenerator
             ];
             if ($hasZprime) { $values[] = $lab->zPrimeScore !== null ? round($lab->zPrimeScore, 2) : ''; }
             $values[] = $lab->zetaScore !== null ? round($lab->zetaScore, 2) : '';
+            $values[] = $lab->exclusionLabel() ?? ''; // exclusion column
 
             foreach ($values as $ci => $value) {
+                $isExclCol = ($ci === count($values) - 1);
                 $ws->getCell("{$cols[$ci]}{$row}")->setValue($value);
                 $ws->getStyle("{$cols[$ci]}{$row}")->applyFromArray([
-                    'font'      => ['name' => 'Calibri', 'size' => 10, 'bold' => ($ci === 0)],
+                    'font'      => [
+                        'name'   => 'Calibri',
+                        'size'   => 10,
+                        'bold'   => ($ci === 0),
+                        // Truncated value cells in italic (activity col = index 1)
+                        'italic' => ($ci === 1 && $lab->isTruncated),
+                        'color'  => ['argb' => $isExclCol && $isExcluded ? 'FFC0392B' : 'FF000000'],
+                    ],
                     'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.$bg]],
-                    'alignment' => ['horizontal' => $ci === 0 ? Alignment::HORIZONTAL_CENTER : Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
+                    'alignment' => [
+                        'horizontal' => ($ci === 0 || $isExclCol) ? Alignment::HORIZONTAL_CENTER : Alignment::HORIZONTAL_RIGHT,
+                        'vertical'   => Alignment::VERTICAL_CENTER,
+                    ],
                     'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFD9D9D9']]],
                 ]);
             }
 
-            $this->applyScoreColor($ws, $cols[$zscoreColIdx].$row, $lab->zScore);
-            if ($zprimeColIdx !== null) { $this->applyScoreColor($ws, $cols[$zprimeColIdx].$row, $lab->zPrimeScore); }
-            $this->applyScoreColor($ws, $cols[$zetaColIdx].$row, $lab->zetaScore);
+            // Score colour highlights (only for included labs — excluded have no scores)
+            if ($lab->isIncluded) {
+                $this->applyScoreColor($ws, $cols[$zscoreColIdx].$row, $lab->zScore);
+                if ($zprimeColIdx !== null) { $this->applyScoreColor($ws, $cols[$zprimeColIdx].$row, $lab->zPrimeScore); }
+                $this->applyScoreColor($ws, $cols[$zetaColIdx].$row, $lab->zetaScore);
+            }
         }
     }
 
@@ -364,6 +409,363 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         }
         // 10% breathing room above the highest error bar tip
         return $max > 0.0 ? $max * 1.10 : $max;
+    }
+
+    // ── Bar chart sheets (bias, zeta_score) ──────────────────────────────────
+
+    /**
+     * Build a data sheet + bar chart skeleton for a score field.
+     *
+     * Columns: A = lab number (string), B = score value
+     * Chart skeleton: simple barChart — OOXML patcher applies uniform colour.
+     *
+     * @param string $field  Property name on LabResultData: 'biasPercent' | 'zetaScore'
+     */
+    private function buildBarSheet(
+        Worksheet          $ws,
+        SampleAnalysisData $analysis,
+        string             $field,
+        string             $yLabel,
+    ): void {
+        $labs = collect($analysis->labResults)->sortBy($field)->values()->all();
+        $n    = count($labs);
+
+        // ── Table header ──────────────────────────────────────────────────────
+        foreach (['LAB N°', $yLabel] as $ci => $header) {
+            $col = ['A', 'B'][$ci];
+            $ws->getCell("{$col}1")->setValue($header);
+            $ws->getStyle("{$col}1")->applyFromArray([
+                'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
+                'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],
+            ]);
+        }
+        $ws->getColumnDimension('A')->setWidth(10);
+        $ws->getColumnDimension('B')->setWidth(16);
+        $ws->getRowDimension(1)->setRowHeight(28);
+
+        // ── Data rows ─────────────────────────────────────────────────────────
+        foreach ($labs as $idx => $lab) {
+            /** @var LabResultData $lab */
+            $row   = $idx + 2;
+            $bg    = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
+            $value = $lab->{$field} ?? null;
+
+            $ws->getCell("A{$row}")->setValue((string) $lab->labNumber);
+            $ws->getCell("B{$row}")->setValue($value);
+
+            foreach (['A', 'B'] as $col) {
+                $ws->getStyle("{$col}{$row}")->applyFromArray([
+                    'font'      => ['name' => 'Calibri', 'size' => 10],
+                    'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.$bg]],
+                    'alignment' => ['horizontal' => $col === 'A' ? Alignment::HORIZONTAL_CENTER : Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
+                    'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFD9D9D9']]],
+                ]);
+            }
+        }
+
+        // ── Bar chart skeleton ────────────────────────────────────────────────
+        $sheet   = $ws->getTitle();
+        $lastRow = $n + 1;
+
+        $xLabels = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
+            "'{$sheet}'!\$A\$2:\$A\${$lastRow}", null, $n);
+        $label   = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
+            null, null, 1, [$yLabel]);
+        $values  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+            "'{$sheet}'!\$B\$2:\$B\${$lastRow}", null, $n);
+
+        $series = new DataSeries(
+            DataSeries::TYPE_BARCHART,
+            DataSeries::GROUPING_CLUSTERED,
+            [0],
+            [$label], [$xLabels], [$values],
+        );
+
+        $chart = new Chart(
+            'bar_' . $field,
+            new Title("{$analysis->isotope} {$yLabel} ({$analysis->sampleCode})"),
+            null,
+            new PlotArea(new Layout(), [$series]),
+            true,
+            DataSeries::EMPTY_AS_GAP,
+            new Title('Laboratoire'),
+            new Title($yLabel),
+        );
+        $chart->setTopLeftPosition('D1');
+        $chart->setBottomRightPosition('R26');
+
+        $ws->addChart($chart);
+    }
+
+    // ── zprime vs zeta scatter (n ≥ 12 only) ─────────────────────────────────
+
+    /**
+     * Scatter plot: z'-score (X) vs zeta-score (Y), one point per lab.
+     *
+     * Threshold lines at ±2 (warning, dashed orange) and ±3 (action, dashed red)
+     * on both axes — implemented as 8 two-point scatter series so they span
+     * the full axis range and remain native/editable.
+     *
+     * Data table:
+     *   A = lab number (label)
+     *   B = zprime score (X)
+     *   C = zeta score  (Y)
+     */
+    private function buildZprimeVsZetaSheet(Worksheet $ws, SampleAnalysisData $analysis): void
+    {
+        $labs    = collect($analysis->labResults)->sortBy('zPrimeScore')->values()->all();
+        $n       = count($labs);
+        $axisMax = 4.0;
+        $sheet   = $ws->getTitle();
+
+        // ── Column widths ─────────────────────────────────────────────────────
+        $ws->getColumnDimension('A')->setWidth(10);
+        $ws->getColumnDimension('B')->setWidth(14);
+        $ws->getColumnDimension('C')->setWidth(14);
+        // Threshold data columns (hidden — chart data source)
+        foreach (['D','E','F','G','H','I','J','K'] as $col) {
+            $ws->getColumnDimension($col)->setWidth(8);
+        }
+
+        // ── Table header (A1:C1) ──────────────────────────────────────────────
+        foreach (['LAB N°', "Z'-SCORE", 'ZETA-SCORE'] as $ci => $header) {
+            $col = ['A', 'B', 'C'][$ci];
+            $ws->getCell("{$col}1")->setValue($header);
+            $ws->getStyle("{$col}1")->applyFromArray([
+                'font'      => ['bold' => true, 'color' => ['argb' => 'FF'.self::WHITE], 'name' => 'Calibri', 'size' => 10],
+                'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.self::BLUE_DARK]],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],
+            ]);
+        }
+        $ws->getRowDimension(1)->setRowHeight(28);
+
+        // ── Lab data rows (A2:C{n+1}) ─────────────────────────────────────────
+        foreach ($labs as $idx => $lab) {
+            /** @var LabResultData $lab */
+            $row = $idx + 2;
+            $bg  = ($idx % 2 === 0) ? self::GREY_ROW : self::WHITE;
+            $ws->getCell("A{$row}")->setValue((string) $lab->labNumber);
+            $ws->getCell("B{$row}")->setValue($lab->zPrimeScore);
+            $ws->getCell("C{$row}")->setValue($lab->zetaScore);
+            foreach (['A', 'B', 'C'] as $col) {
+                $ws->getStyle("{$col}{$row}")->applyFromArray([
+                    'font'      => ['name' => 'Calibri', 'size' => 10],
+                    'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF'.$bg]],
+                    'alignment' => ['horizontal' => $col === 'A' ? Alignment::HORIZONTAL_CENTER : Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
+                    'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFD9D9D9']]],
+                ]);
+            }
+        }
+
+        // ── Threshold line data in cells (rows 2-3, cols D..K) ───────────────
+        // Each vertical line  = (fixed_x, fixed_x) with Y = (-axisMax, +axisMax)
+        // Each horizontal line = (fixed_y, fixed_y) with X = (-axisMax, +axisMax)
+        // Layout: D=x_col1, E=y_col1, F=x_col2, G=y_col2, ... (4 lines × 2 cols)
+        // Rows 2-3 hold the 2-point coordinates for each threshold line.
+        //
+        // Col pairs:   D/E = x=+2   F/G = x=-2   H/I = x=+3   J/K = x=-3
+        //              then rows 4-5 for horizontal lines (reuse same cols):
+        // Col pairs:   D/E = y=+2   F/G = y=-2   H/I = y=+3   J/K = y=-3
+
+        $threshData = [
+            // [xStart, yStart, xEnd, yEnd]  — vertical lines (rows 2-3)
+            ['D', 'E',  2,      2,     -$axisMax, $axisMax],  // x=+2
+            ['F', 'G', -2,     -2,     -$axisMax, $axisMax],  // x=-2
+            ['H', 'I',  3,      3,     -$axisMax, $axisMax],  // x=+3
+            ['J', 'K', -3,     -3,     -$axisMax, $axisMax],  // x=-3
+        ];
+        foreach ($threshData as [$xCol, $yCol, $x1, $x2, $y1, $y2]) {
+            $ws->getCell("{$xCol}2")->setValue($x1);
+            $ws->getCell("{$xCol}3")->setValue($x2);
+            $ws->getCell("{$yCol}2")->setValue($y1);
+            $ws->getCell("{$yCol}3")->setValue($y2);
+        }
+
+        // Horizontal lines in rows 4-5 (reuse same col pairs)
+        $horizData = [
+            ['D', 'E', -$axisMax, $axisMax,  2,  2],   // y=+2
+            ['F', 'G', -$axisMax, $axisMax, -2, -2],   // y=-2
+            ['H', 'I', -$axisMax, $axisMax,  3,  3],   // y=+3
+            ['J', 'K', -$axisMax, $axisMax, -3, -3],   // y=-3
+        ];
+        foreach ($horizData as [$xCol, $yCol, $x1, $x2, $y1, $y2]) {
+            $ws->getCell("{$xCol}4")->setValue($x1);
+            $ws->getCell("{$xCol}5")->setValue($x2);
+            $ws->getCell("{$yCol}4")->setValue($y1);
+            $ws->getCell("{$yCol}5")->setValue($y2);
+        }
+
+        // ── Chart series ──────────────────────────────────────────────────────
+        $lastRow = $n + 1;
+
+        $labels  = [];
+        $xSeries = [];
+        $ySeries = [];
+        $orders  = [];
+
+        // Series 0 — lab points (zprime X, zeta Y) — STYLE_MARKER
+        $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING,
+            null, null, 1, ["{$analysis->isotope} ({$analysis->sampleCode})"]);
+        $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+            "'{$sheet}'!\$B\$2:\$B\${$lastRow}", null, $n);
+        $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+            "'{$sheet}'!\$C\$2:\$C\${$lastRow}", null, $n);
+        $orders[]  = 0;
+
+        // Series 1-4 — vertical threshold lines (cell-referenced, STYLE_LINE)
+        $vertCols = [['D','E'], ['F','G'], ['H','I'], ['J','K']];
+        foreach ($vertCols as $si => [$xCol, $yCol]) {
+            $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, null, null, 1, ['']);
+            $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+                "'{$sheet}'!\${$xCol}\$2:\${$xCol}\$3", null, 2);
+            $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+                "'{$sheet}'!\${$yCol}\$2:\${$yCol}\$3", null, 2);
+            $orders[]  = $si + 1;
+        }
+
+        // Series 5-8 — horizontal threshold lines (rows 4-5)
+        foreach ($vertCols as $si => [$xCol, $yCol]) {
+            $labels[]  = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, null, null, 1, ['']);
+            $xSeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+                "'{$sheet}'!\${$xCol}\$4:\${$xCol}\$5", null, 2);
+            $ySeries[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER,
+                "'{$sheet}'!\${$yCol}\$4:\${$yCol}\$5", null, 2);
+            $orders[]  = $si + 5;
+        }
+
+        // One DataSeries per plot style group — PhpSpreadsheet requires separate
+        // DataSeries objects if we mix STYLE_MARKER and STYLE_LINE.
+        // We use STYLE_SMOOTHMARKER for the whole chart (markers + line capable)
+        // and suppress lines on series 0 via OOXML patch.
+        $series = new DataSeries(
+            DataSeries::TYPE_SCATTERCHART,
+            DataSeries::GROUPING_STANDARD,
+            $orders,
+            $labels, $xSeries, $ySeries,
+        );
+        $series->setPlotStyle(DataSeries::STYLE_MARKER);
+
+        $title = "{$analysis->isotope} Z'-score vs Zeta-score ({$analysis->sampleCode})";
+        $chart = new Chart(
+            'zprime_vs_zeta',
+            new Title($title),
+            null,
+            new PlotArea(new Layout(), [$series]),
+            true,
+            DataSeries::EMPTY_AS_GAP,
+            new Title("Z'-score"),
+            new Title('Zeta-score'),
+        );
+        $chart->setTopLeftPosition('M1');
+        $chart->setBottomRightPosition('Z26');
+        $ws->addChart($chart);
+    }
+
+    /**
+     * Post-generation OOXML patch for the zprime vs zeta scatter chart.
+     * Applies: lab series = circle markers, no line
+     *          threshold series 1-4 = vertical lines (orange/red dashed)
+     *          threshold series 5-8 = horizontal lines (orange/red dashed)
+     */
+    private function patchZprimeVsZetaChart(ChartDocument $doc, int $chartIndex, float $axisMax): void
+    {
+        try {
+            $ctx = $doc->chart($chartIndex);
+
+            // Series 0 — lab points: circle markers, NO connecting line
+            $ctx->series(0)
+                ->setMarker(MarkerDefinition::circle('4472C4', 7))
+                ->setLine(LineDefinition::none());
+
+            // Series 1-4 — vertical threshold lines
+            // Series 5-8 — horizontal threshold lines
+            // Color: orange for ±2 (series 1,2,5,6), red for ±3 (series 3,4,7,8)
+            $thresholdStyles = [
+                1 => 'FFA500', 2 => 'FFA500', // x=+2, x=-2 — orange
+                3 => 'FF0000', 4 => 'FF0000', // x=+3, x=-3 — red
+                5 => 'FFA500', 6 => 'FFA500', // y=+2, y=-2 — orange
+                7 => 'FF0000', 8 => 'FF0000', // y=+3, y=-3 — red
+            ];
+
+            foreach ($thresholdStyles as $serIdx => $color) {
+                $ctx->series($serIdx)
+                    ->setLine(LineDefinition::dashed($color, 'dash', 12700))
+                    ->setMarker(MarkerDefinition::none());
+            }
+
+            // Both axes: symmetric ±axisMax, centered on 0
+            // On a scatter chart PhpSpreadsheet writes two valAx — index 0 = X, index 1 = Y
+            $scale = new AxisScaleDefinition(min: -$axisMax, max: $axisMax);
+            $ctx->yAxis(0)->setScale($scale); // X axis (first valAx in OOXML)
+            $ctx->yAxis(1)->setScale($scale); // Y axis (second valAx)
+
+            $ctx->save();
+
+            // Additional OOXML patch: center axes at zero (crosses at 0,0)
+            // ChartDocument doesn't have a crosses() API yet — patch directly
+            $this->patchScatterAxesCrossAtZero($doc->getXlsxPath(), $chartIndex);
+
+        } catch (\InvalidArgumentException) {
+            // Chart not present (n < 12) — skip silently
+        }
+    }
+
+    /**
+     * Patch <c:crosses val="autoZero"> → <c:crosses val="autoZero"> is already correct,
+     * but we also need <c:crossesAt val="0"/> to ensure both axes cross at origin.
+     * Direct ZipArchive patch on the chart XML after ChartDocument::save().
+     */
+    private function patchScatterAxesCrossAtZero(string $xlsxPath, int $chartIndex): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($xlsxPath) !== true) return;
+
+        $keys = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (preg_match('#^xl/charts/chart(\d+)\.xml$#', $name)) {
+                $keys[] = $name;
+            }
+        }
+        sort($keys);
+
+        if (! isset($keys[$chartIndex])) {
+            $zip->close();
+            return;
+        }
+
+        $xml = $zip->getFromName($keys[$chartIndex]);
+
+        // Replace <c:crosses val="autoZero"/> with crossesAt=0 on all axes
+        // so both X and Y axes cross at the origin
+        $xml = str_replace(
+            '<c:crosses val="autoZero"/>',
+            '<c:crosses val="autoZero"/><c:crossesAt val="0"/>',
+            $xml
+        );
+
+        $zip->addFromString($keys[$chartIndex], $xml);
+        $zip->close();
+    }
+
+    /**
+     * OOXML patch for bar charts: uniform blue fill on all bars (no colour-by-score),
+     * no threshold lines, explicit Y-axis scaling symmetric around 0.
+     */
+    private function patchBarChart(ChartDocument $doc, int $chartIndex, string $sheetName): void
+    {
+        try {
+            $doc->chart($chartIndex)
+                ->series(0)
+                    ->setLine(LineDefinition::solid('4472C4', 0))  // thin border, same blue
+                    ->setMarker(MarkerDefinition::none())
+                ->save();
+        } catch (\InvalidArgumentException) {
+            // Chart index out of range — skip silently
+        }
     }
 
     // ── Stubs ─────────────────────────────────────────────────────────────────
