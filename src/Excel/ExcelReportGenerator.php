@@ -21,11 +21,11 @@ use Procorad\ProcostatReporting\DTO\ReportResult;
 use Procorad\ProcostatReporting\Exceptions\ReportGenerationException;
 use Procorad\ProcostatReporting\Support\FormatHelper;
 use Procorad\ProcostatReporting\Support\PackagePaths;
+use Procorad\ProcostatReporting\Excel\Support\ExcelColors;
 
 final class ExcelReportGenerator implements ReportGenerator
 {
     // ── Palette (matching Procorad blue theme) ──────────────────────────────
-    private const BLUE_DARK   = '1F497D';
     private const BLUE_LIGHT  = 'DCE6F1';
     private const WHITE       = 'FFFFFF';
     private const GREY_ROW    = 'F2F2F2';
@@ -159,7 +159,7 @@ final class ExcelReportGenerator implements ReportGenerator
             $cell->setValue($header);
             $ws->getStyle("{$cols[$i]}1")->applyFromArray([
                 'font'      => ['bold' => true, 'color' => ['argb' => 'FF' . self::WHITE], 'name' => 'Calibri', 'size' => 10],
-                'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF' . self::BLUE_DARK]],
+                'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF' . ExcelColors::BLUE_DARK]],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER, 'wrapText' => true],
                 'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],
             ]);
@@ -261,7 +261,7 @@ final class ExcelReportGenerator implements ReportGenerator
         $ws->getCell($cell)->setValue($title);
         $ws->getStyle($cell)->applyFromArray([
             'font'      => ['bold' => true, 'color' => ['argb' => 'FF' . self::WHITE], 'name' => 'Calibri', 'size' => 11],
-            'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF' . self::BLUE_DARK]],
+            'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF' . ExcelColors::BLUE_DARK]],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
         ]);
         $ws->getRowDimension((int) preg_replace('/\D/', '', $cell))->setRowHeight(22);
@@ -271,7 +271,7 @@ final class ExcelReportGenerator implements ReportGenerator
     {
         $ws->getCell("{$colLabel}{$row}")->setValue($label);
         $ws->getStyle("{$colLabel}{$row}")->applyFromArray([
-            'font'      => ['bold' => true, 'color' => ['argb' => 'FF' . self::BLUE_DARK], 'name' => 'Calibri', 'size' => 11],
+            'font'      => ['bold' => true, 'color' => ['argb' => 'FF' . ExcelColors::BLUE_DARK], 'name' => 'Calibri', 'size' => 11],
             'fill'      => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => 'FF' . self::BLUE_LIGHT]],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_LEFT, 'vertical' => Alignment::VERTICAL_CENTER, 'indent' => 1],
             'borders'   => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['argb' => 'FFB8CCE4']]],

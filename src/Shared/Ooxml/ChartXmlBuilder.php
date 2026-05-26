@@ -97,7 +97,7 @@ final class ChartXmlBuilder
     </c:plotArea>
     <c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/>
   </c:chart>
-  <c:spPr><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></c:spPr>
+  <c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></c:spPr>
   <c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData>
 </c:chartSpace>
 XML;
@@ -105,21 +105,108 @@ XML;
 
     // ── Bar chart (scores: bias, zprime, zeta) ────────────────────────────────
 
+    /**
+     * Builds a barChart + optional lineChart overlay.
+     *
+     * PowerPoint compatibility rules (learned from reference 25CB-14C.pptx):
+     *
+     *   1. barChart and lineChart MUST use SEPARATE axis pairs, not shared ones.
+     *      - barChart  → axId 2001 (catAx bottom) + 2002 (valAx left)
+     *      - lineChart → axId 2003 (catAx top, hidden) + 2004 (valAx right, deleted)
+     *
+     *   2. The lineChart catAx must be a REAL catAx (not valAx), positioned at "t",
+     *      with tickLblPos="none" so labels are invisible.
+     *
+     *   3. The lineChart valAx must be deleted (delete val="1") so it doesn't
+     *      render a second Y axis — but it MUST share the same scaling as the
+     *      barChart valAx so the threshold lines land at the right Y positions.
+     *
+     *   4. Threshold line series use <c:cat> pointing to the lineChart's catAx
+     *      (same categories as barChart) and <c:val> with the constant threshold.
+     *      They do NOT need numeric cat indices — string categories work fine.
+     *
+     *   5. bias chart: no thresholds, all bars plain blue (no per-bar colour).
+     *      score charts (zprime, zeta): coloured bars + ±2/±3 threshold lines.
+     */
     private function buildBarChart(GraphDefinition $graph): string
     {
-        $fmt      = $this->floatFmt();
-        $title    = htmlspecialchars($graph->title, ENT_XML1);
-        $yLbl     = htmlspecialchars($graph->yAxisLabel, ENT_XML1);
-        $yMax     = $fmt($graph->yMax);
-        $yMin     = $fmt($graph->yMin);
-        $catCache = $this->strCache($graph->categories);
+        $fmt   = $this->floatFmt();
+        $title = htmlspecialchars($graph->title, ENT_XML1);
+        $yLbl  = htmlspecialchars($graph->yAxisLabel, ENT_XML1);
+        $yMax  = $fmt($graph->yMax);
+        $yMin  = $fmt($graph->yMin);
 
-        // Per-bar colouring: blue OK, orange warning, red action
-        $bars = $this->buildColoredBars($graph->values, $graph->categories, $fmt);
+        if ($graph->showThresholds) {
+            $bars = $this->buildColoredBars($graph->values, $graph->categories, $fmt);
+        } else {
+            // bias: all bars uniform blue, no per-bar colour override
+            $bars = $this->buildUniformBars($graph->values, $graph->categories, $fmt);
+        }
 
-        // Warning/action reference lines via scatter overlay
-        $warn = 2.0;
-        $act  = 3.0;
+        if ($graph->showThresholds) {
+            $warn = 2.0;
+            $act  = 3.0;
+            // Threshold series: use the same string categories as the barChart.
+            // They reference the lineChart's own catAx (2003) so PowerPoint
+            // keeps them visually aligned with the bars.
+            $cats = $graph->categories;
+            $thresholdSeries =
+                $this->lineThresholdCat(1, $cats, $fmt($warn),  'FFA500', 'dash') .
+                $this->lineThresholdCat(2, $cats, $fmt(-$warn), 'FFA500', 'dash') .
+                $this->lineThresholdCat(3, $cats, $fmt($act),   'FF0000', 'lgDash') .
+                $this->lineThresholdCat(4, $cats, $fmt(-$act),  'FF0000', 'lgDash');
+
+            $lineChartBlock = <<<XML
+
+      <c:lineChart>
+        <c:grouping val="standard"/><c:varyColors val="0"/>
+        {$thresholdSeries}
+        <c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/>
+          <c:showCatName val="0"/><c:showSerName val="0"/>
+          <c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>
+        <c:marker val="0"/><c:smooth val="0"/>
+        <c:axId val="2003"/><c:axId val="2004"/>
+      </c:lineChart>
+XML;
+            // Hidden top catAx for lineChart (same categories, labels invisible)
+            $lineCatAxis = <<<XML
+
+      <c:catAx>
+        <c:axId val="2003"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/><c:axPos val="t"/>
+        <c:numFmt formatCode="General" sourceLinked="1"/>
+        <c:majorTickMark val="none"/><c:minorTickMark val="none"/>
+        <c:tickLblPos val="none"/>
+        <c:crossAx val="2004"/><c:crosses val="max"/>
+        <c:auto val="0"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/>
+        <c:noMultiLvlLbl val="0"/>
+      </c:catAx>
+XML;
+            // Hidden right valAx for lineChart — same scale as barChart valAx
+            // so threshold values land at the correct Y positions
+            $lineValAxis = <<<XML
+
+      <c:valAx>
+        <c:axId val="2004"/>
+        <c:scaling>
+          <c:orientation val="minMax"/>
+          <c:max val="{$yMax}"/>
+          <c:min val="{$yMin}"/>
+        </c:scaling>
+        <c:delete val="1"/><c:axPos val="r"/>
+        <c:numFmt formatCode="General" sourceLinked="0"/>
+        <c:majorTickMark val="none"/><c:minorTickMark val="none"/>
+        <c:tickLblPos val="none"/>
+        <c:crossAx val="2003"/><c:crosses val="max"/>
+        <c:crossBetween val="between"/>
+      </c:valAx>
+XML;
+        } else {
+            $lineChartBlock = '';
+            $lineCatAxis    = '';
+            $lineValAxis    = '';
+        }
 
         return <<<XML
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -131,7 +218,7 @@ XML;
   <c:chart>
     <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/>
       <a:p><a:pPr algn="ctr"><a:defRPr/></a:pPr>
-        <a:r><a:rPr lang="fr-FR" sz="1400" b="0"/><a:t>{$title}</a:t></a:r>
+        <a:r><a:rPr lang="fr-FR" sz="1400" b="1"/><a:t>{$title}</a:t></a:r>
       </a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>
     <c:autoTitleDeleted val="0"/>
     <c:plotArea><c:layout/>
@@ -143,42 +230,31 @@ XML;
         <c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/>
           <c:showCatName val="0"/><c:showSerName val="0"/>
           <c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>
+        <c:gapWidth val="100"/>
         <c:axId val="2001"/><c:axId val="2002"/>
-      </c:barChart>
-      <c:scatterChart>
-        <c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>
-        {$this->scatterLine(0, $fmt($warn),  'FFA500', null)}
-        {$this->scatterLine(1, $fmt(-$warn), 'FFA500', null)}
-        {$this->scatterLine(2, $fmt($act),   'FF0000', null)}
-        {$this->scatterLine(3, $fmt(-$act),  'FF0000', null)}
-        <c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/>
-          <c:showCatName val="0"/><c:showSerName val="0"/>
-          <c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>
-        <c:axId val="2003"/><c:axId val="2004"/>
-      </c:scatterChart>
-      {$this->catAxis('2001', '2002')}
-      {$this->valAxis('2002', '2001', $yMin, $yMax, $yLbl)}
-      {$this->hiddenScatterAxes('2003', '2004')}
+      </c:barChart>{$lineChartBlock}
+      {$this->catAxis('2001', '2002', true)}
+      {$this->valAxis('2002', '2001', $yMin, $yMax, $yLbl)}{$lineCatAxis}{$lineValAxis}
     </c:plotArea>
     <c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/>
   </c:chart>
-  <c:spPr><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></c:spPr>
+  <c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></c:spPr>
   <c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData>
 </c:chartSpace>
 XML;
     }
 
     /**
-     * Build a single bar series with per-bar fill colouring.
-     * Blue = OK, Orange = warning (|v| ≥ 2), Red = action (|v| ≥ 3).
+     * Bar series with per-bar colour based on threshold (|v| ≥ 3 red, ≥ 2 orange, else blue).
+     * Used for z-prime and zeta score charts.
+     * - invertIfNegative val="0" keeps negative bars solid (same colour, not inverted/hollow)
+     * - showCatName val="1" on series dLbls displays lab numbers above/below each bar
      */
     private function buildColoredBars(array $values, array $categories, callable $fmt): string
     {
-        $n        = count($values);
         $catCache = $this->strCache($categories);
         $valCache = $this->numCache($values, $fmt);
 
-        // Per-point colour overrides (<c:dPt>)
         $dPts = '';
         foreach ($values as $i => $v) {
             $abs   = abs($v);
@@ -196,7 +272,50 @@ XML;
         return <<<XML
 <c:ser>
   <c:idx val="0"/><c:order val="0"/>
+  <c:invertIfNegative val="0"/>
   {$dPts}
+  <c:dLbls>
+    <c:txPr><a:bodyPr rot="0" vert="horz"/><a:lstStyle/>
+      <a:p><a:pPr algn="ctr"><a:defRPr lang="fr-FR" sz="1000" b="1"/></a:pPr><a:endParaRPr lang="fr-FR"/></a:p>
+    </c:txPr>
+    <c:showLegendKey val="0"/><c:showVal val="0"/>
+    <c:showCatName val="1"/><c:showSerName val="0"/>
+    <c:showPercent val="0"/><c:showBubbleSize val="0"/>
+    <c:showLeaderLines val="0"/>
+  </c:dLbls>
+  <c:cat><c:strRef><c:f/>{$catCache}</c:strRef></c:cat>
+  <c:val><c:numRef><c:f/>{$valCache}</c:numRef></c:val>
+</c:ser>
+XML;
+    }
+
+    /**
+     * Bar series with uniform blue — used for bias chart (no threshold colouring).
+     * - invertIfNegative val="0" keeps negative bars solid blue (not inverted/hollow)
+     * - showCatName val="1" on series dLbls displays lab numbers above/below each bar
+     */
+    private function buildUniformBars(array $values, array $categories, callable $fmt): string
+    {
+        $catCache = $this->strCache($categories);
+        $valCache = $this->numCache($values, $fmt);
+
+        return <<<XML
+<c:ser>
+  <c:idx val="0"/><c:order val="0"/>
+  <c:spPr>
+    <a:solidFill><a:srgbClr val="4472C4"/></a:solidFill>
+    <a:ln><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></a:ln>
+  </c:spPr>
+  <c:invertIfNegative val="0"/>
+  <c:dLbls>
+    <c:txPr><a:bodyPr rot="0" vert="horz"/><a:lstStyle/>
+      <a:p><a:pPr algn="ctr"><a:defRPr lang="fr-FR" sz="1000" b="1"/></a:pPr><a:endParaRPr lang="fr-FR"/></a:p>
+    </c:txPr>
+    <c:showLegendKey val="0"/><c:showVal val="0"/>
+    <c:showCatName val="1"/><c:showSerName val="0"/>
+    <c:showPercent val="0"/><c:showBubbleSize val="0"/>
+    <c:showLeaderLines val="0"/>
+  </c:dLbls>
   <c:cat><c:strRef><c:f/>{$catCache}</c:strRef></c:cat>
   <c:val><c:numRef><c:f/>{$valCache}</c:numRef></c:val>
 </c:ser>
@@ -205,31 +324,46 @@ XML;
 
     // ── Shared axis / line fragments ──────────────────────────────────────────
 
-    private function scatterLine(int $idx, string $yVal, string $color, ?string $dash): string
+    /**
+     * A lineChart threshold series using the same string categories as the barChart.
+     * References the lineChart's own separate catAx (2003/2004) so PowerPoint accepts
+     * the barChart + lineChart combo without rejecting the file.
+     *
+     * Pattern taken directly from reference PPTX (25CB-14C.pptx chart4.xml):
+     *   - <c:cat> uses string categories matching the barChart
+     *   - <c:val> is a constant repeated for every category
+     *   - Axes 2003 (catAx top hidden) + 2004 (valAx right deleted) are separate from
+     *     barChart's 2001/2002 — this is the key to PowerPoint compatibility.
+     */
+    private function lineThresholdCat(int $idx, array $categories, string $yVal, string $color, string $dash): string
     {
-        $dashEl = $dash ? "<a:prstDash val=\"{$dash}\"/>" : '';
+        $n        = count($categories);
+        $catCache = $this->strCache($categories);
+        $valPts   = '';
+        for ($i = 0; $i < $n; $i++) {
+            $valPts .= "<c:pt idx=\"{$i}\"><c:v>{$yVal}</c:v></c:pt>";
+        }
+        $valCache = "<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val=\"{$n}\"/>{$valPts}</c:numCache>";
+
         return <<<XML
 <c:ser>
   <c:idx val="{$idx}"/><c:order val="{$idx}"/>
-  <c:spPr><a:ln w="12700" cmpd="sng">
-    <a:solidFill><a:srgbClr val="{$color}"/></a:solidFill>{$dashEl}
+  <c:spPr><a:ln w="19050" cap="rnd" cmpd="sng">
+    <a:solidFill><a:srgbClr val="{$color}"/></a:solidFill>
+    <a:prstDash val="{$dash}"/>
+    <a:round/>
   </a:ln></c:spPr>
   <c:marker><c:symbol val="none"/></c:marker>
-  <c:xVal><c:numRef><c:f/><c:numCache>
-    <c:formatCode>General</c:formatCode><c:ptCount val="2"/>
-    <c:pt idx="0"><c:v>0</c:v></c:pt><c:pt idx="1"><c:v>1</c:v></c:pt>
-  </c:numCache></c:numRef></c:xVal>
-  <c:yVal><c:numRef><c:f/><c:numCache>
-    <c:formatCode>General</c:formatCode><c:ptCount val="2"/>
-    <c:pt idx="0"><c:v>{$yVal}</c:v></c:pt><c:pt idx="1"><c:v>{$yVal}</c:v></c:pt>
-  </c:numCache></c:numRef></c:yVal>
+  <c:cat><c:strRef><c:f/>{$catCache}</c:strRef></c:cat>
+  <c:val><c:numRef><c:f/>{$valCache}</c:numRef></c:val>
   <c:smooth val="0"/>
 </c:ser>
 XML;
     }
 
-    private function catAxis(string $axId, string $crossAx): string
+    private function catAxis(string $axId, string $crossAx, bool $hideLabels = false): string
     {
+        $lblPos = $hideLabels ? 'none' : 'low';
         return <<<XML
 <c:catAx>
   <c:axId val="{$axId}"/>
@@ -237,7 +371,7 @@ XML;
   <c:delete val="0"/><c:axPos val="b"/>
   <c:numFmt formatCode="General" sourceLinked="1"/>
   <c:majorTickMark val="none"/><c:minorTickMark val="none"/>
-  <c:tickLblPos val="low"/>
+  <c:tickLblPos val="{$lblPos}"/>
   <c:txPr><a:bodyPr/><a:lstStyle/>
     <a:p><a:pPr><a:defRPr lang="fr-FR" sz="1000" b="1">
       <a:latin typeface="Calibri"/>
@@ -282,6 +416,34 @@ LBLXML : '';
   <c:crosses val="autoZero"/>
   <c:crossBetween val="between"/>
 </c:valAx>
+XML;
+    }
+
+    /**
+     * A scatterChart series for the results chart (lineChart primary axis).
+     * Spans x=0 to x=1 at a constant y value — used for assigned value lines.
+     * Only valid when the primary chart is lineChart (not barChart).
+     */
+    private function scatterLine(int $idx, string $yVal, string $color, ?string $dash): string
+    {
+        $dashEl = $dash ? "<a:prstDash val=\"{$dash}\"/>" : '';
+        return <<<XML
+<c:ser>
+  <c:idx val="{$idx}"/><c:order val="{$idx}"/>
+  <c:spPr><a:ln w="12700" cmpd="sng">
+    <a:solidFill><a:srgbClr val="{$color}"/></a:solidFill>{$dashEl}
+  </a:ln></c:spPr>
+  <c:marker><c:symbol val="none"/></c:marker>
+  <c:xVal><c:numRef><c:f/><c:numCache>
+    <c:formatCode>General</c:formatCode><c:ptCount val="2"/>
+    <c:pt idx="0"><c:v>0</c:v></c:pt><c:pt idx="1"><c:v>1</c:v></c:pt>
+  </c:numCache></c:numRef></c:xVal>
+  <c:yVal><c:numRef><c:f/><c:numCache>
+    <c:formatCode>General</c:formatCode><c:ptCount val="2"/>
+    <c:pt idx="0"><c:v>{$yVal}</c:v></c:pt><c:pt idx="1"><c:v>{$yVal}</c:v></c:pt>
+  </c:numCache></c:numRef></c:yVal>
+  <c:smooth val="0"/>
+</c:ser>
 XML;
     }
 

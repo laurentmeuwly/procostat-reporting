@@ -54,7 +54,7 @@ final class WordDocumentGenerator implements DocumentGenerator
             'logoPath'          => PackagePaths::asset('logo.png'),
             'propertyFileTitle' => $data->metadata['propertyFileTitle'] ?? 'Property File Title',
             'locale'            => $data->metadata['locale'] ?? 'fr',
-            'generatedAt'       => now()->toIso8601String(),
+            'generatedAt'       => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
         ]);
     }
 

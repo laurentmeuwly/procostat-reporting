@@ -4,21 +4,46 @@ namespace Procorad\ProcostatReporting\PowerPoint\Ooxml;
 
 use Procorad\ProcostatReporting\Excel\Ooxml\Definitions\GraphDefinition;
 use Procorad\ProcostatReporting\Shared\Ooxml\ChartXmlBuilder;
+use Procorad\ProcostatReporting\Support\PackagePaths;
 
 /**
  * Injects OOXML charts into a PPTX archive — one new slide per chart.
  *
  * For each GraphDefinition:
- *   1. Builds chartN.xml (inline data)
- *   2. Adds chartN.xml.rels (external xlsx link)
- *   3. Creates a new slideN.xml referencing the chart
- *   4. Adds slideN.xml.rels referencing the chart
- *   5. Updates ppt/presentation.xml sldIdLst
- *   6. Updates [Content_Types].xml
- *   7. Updates ppt/_rels/presentation.xml.rels
+ *   1. Ensures the Procorad logo PNG is present in ppt/media/logo.png
+ *   2. Builds chartN.xml (inline data)
+ *   3. Adds chartN.xml.rels (external xlsx link)
+ *   4. Creates a new slideN.xml with background, logo, and chart
+ *   5. Adds slideN.xml.rels referencing chart + slideLayout1
+ *   6. Updates ppt/presentation.xml sldIdLst
+ *   7. Updates [Content_Types].xml
+ *   8. Updates ppt/_rels/presentation.xml.rels
+ *
+ * Design notes:
+ *   - pptxgenjs only generates slideLayout1, so we cannot rely on slideLayout2
+ *     for the logo — it is embedded directly in each slide XML instead.
+ *   - Background colour (E8E8E8) is set explicitly on every slide so it matches
+ *     the cover slide produced by render-pptx.js.
+ *   - The logo is copied into ppt/media/logo.png on the first call and reused
+ *     on subsequent slides via the same media path.
  */
 final class PptxChartInjector
 {
+    /** Logo position/size in EMU — matches slideLayout2 from reference PPTX */
+    private const LOGO_X  = 107504;
+    private const LOGO_Y  = 69730;
+    private const LOGO_CX = 1615948;
+    private const LOGO_CY = 603940;
+
+    /** Chart area in EMU — fills slide below the logo header */
+    private const CHART_X  = 72000;
+    private const CHART_Y  = 836711;
+    private const CHART_CX = 8999999;
+    private const CHART_CY = 5760000;
+
+    /** Slide background colour (same as cover) */
+    private const BG_COLOR = 'E8E8E8';
+
     public function __construct(
         private readonly ChartXmlBuilder $chartBuilder = new ChartXmlBuilder(),
     ) {}
@@ -39,7 +64,25 @@ final class PptxChartInjector
         $presentationRels = $zip->getFromName('ppt/_rels/presentation.xml.rels');
         $contentTypes     = $zip->getFromName('[Content_Types].xml');
 
-        // Find next slide index
+        // ── Ensure logo is present in the archive ────────────────────────────
+        $logoMediaPath = 'ppt/media/logo.png';
+        $logoAlreadyEmbedded = ($zip->locateName($logoMediaPath) !== false);
+        if (!$logoAlreadyEmbedded) {
+            $logoAsset = PackagePaths::asset('logo.png');
+            if (file_exists($logoAsset)) {
+                $zip->addFile($logoAsset, $logoMediaPath);
+                // Register PNG content type if not already present
+                if (strpos($contentTypes, 'image/png') === false) {
+                    $contentTypes = str_replace(
+                        '</Types>',
+                        '<Default Extension="png" ContentType="image/png"/></Types>',
+                        $contentTypes,
+                    );
+                }
+            }
+        }
+
+        // ── Find next available indices ───────────────────────────────────────
         $existingSlides = [];
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
@@ -49,7 +92,6 @@ final class PptxChartInjector
         }
         $nextSlide = empty($existingSlides) ? 2 : max($existingSlides) + 1;
 
-        // Find next chart index
         $existingCharts = [];
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
@@ -59,17 +101,15 @@ final class PptxChartInjector
         }
         $nextChart = empty($existingCharts) ? 1 : max($existingCharts) + 1;
 
-        // Find next slide relationship rId in presentation.xml.rels
         preg_match_all('/Id="rId(\d+)"/', $presentationRels, $m);
         $nextRid = empty($m[1]) ? 10 : max(array_map('intval', $m[1])) + 1;
 
-        // Find next sldId value in presentation.xml
         preg_match_all('/id="(\d+)"/', $presentationXml, $m2);
         $nextSldId = empty($m2[1]) ? 256 : max(array_map('intval', $m2[1])) + 1;
 
-        $newSlideRels     = '';  // additions to presentation.xml.rels
-        $newSldIdEntries  = '';  // additions to sldIdLst in presentation.xml
-        $newContentTypes  = '';
+        $newSlideRels    = '';
+        $newSldIdEntries = '';
+        $newContentTypes = '';
 
         foreach ($graphs as $graph) {
             $slideIndex = $nextSlide++;
@@ -82,34 +122,28 @@ final class PptxChartInjector
             $chartFile     = "ppt/charts/chart{$chartIndex}.xml";
             $chartRelsFile = "ppt/charts/_rels/chart{$chartIndex}.xml.rels";
 
-            // Chart XML
             $zip->addFromString($chartFile, $this->chartBuilder->build($graph));
 
-            // Chart rels — external xlsx link
             $xlsxPathEscaped = str_replace('\\', '/', $xlsxPath);
             $zip->addFromString($chartRelsFile, $this->buildChartRels($xlsxPathEscaped));
 
-            // Slide XML — chart is rId2 (rId1 is slideLayout)
-            $zip->addFromString($slideFile, $this->buildSlide($graph->title, 'rId2'));
+            // Slide XML: rId1=slideLayout, rId2=chart, rId3=logo image
+            $zip->addFromString($slideFile, $this->buildSlide($graph->title, 'rId2', 'rId3'));
 
-            // Slide rels — reference chart + slide layout
             $zip->addFromString($slideRelsFile, $this->buildSlideRels($chartIndex));
 
-            // Accumulate presentation.xml.rels entry
             $newSlideRels .= sprintf(
                 '<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>',
                 $slideRid,
                 $slideIndex,
             );
 
-            // Accumulate sldIdLst entry
             $newSldIdEntries .= sprintf(
                 '<p:sldId id="%d" r:id="%s"/>',
                 $sldId,
                 $slideRid,
             );
 
-            // Content types
             $newContentTypes .= sprintf(
                 '<Override PartName="/ppt/slides/slide%d.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>',
                 $slideIndex,
@@ -120,14 +154,9 @@ final class PptxChartInjector
             );
         }
 
-        // Patch presentation.xml — append slides to sldIdLst
-        $presentationXml = str_replace('</p:sldIdLst>', $newSldIdEntries . '</p:sldIdLst>', $presentationXml);
-
-        // Patch presentation.xml.rels
+        $presentationXml  = str_replace('</p:sldIdLst>', $newSldIdEntries . '</p:sldIdLst>', $presentationXml);
         $presentationRels = str_replace('</Relationships>', $newSlideRels . '</Relationships>', $presentationRels);
-
-        // Patch content types
-        $contentTypes = str_replace('</Types>', $newContentTypes . '</Types>', $contentTypes);
+        $contentTypes     = str_replace('</Types>', $newContentTypes . '</Types>', $contentTypes);
 
         $zip->addFromString('ppt/presentation.xml', $presentationXml);
         $zip->addFromString('ppt/_rels/presentation.xml.rels', $presentationRels);
@@ -151,23 +180,30 @@ XML;
     }
 
     /**
-     * A 4:3 slide with the chart filling the content area below the header.
-     * Slide dimensions: 9144000 × 6858000 EMU (standard 4:3 PowerPoint).
-     * Chart frame matches reference PPTX (25CB-14C.pptx):
-     *   off x=72000 y=836711 — tight to left edge, below the logo/title header
-     *   cx=8999999 cy=5760000 — full width, fills remaining height
-     * The header (logo + title) is provided by slideLayout2, not drawn here.
+     * Slide XML — 4:3 format (9144000×6858000 EMU).
      *
-     * Note: chart is referenced as rId2 (rId1 is reserved for the slideLayout).
+     * Contains three elements:
+     *   1. Explicit background (E8E8E8) matching the cover slide
+     *   2. Procorad logo (top-left, position/size from reference PPTX)
+     *   3. Chart graphic frame filling the content area below the logo
+     *
+     * Relationship IDs:
+     *   rId1 → slideLayout1 (only layout available from pptxgenjs)
+     *   rId2 → chart XML
+     *   rId3 → logo PNG (ppt/media/logo.png)
      */
-    private function buildSlide(string $title, string $chartRid): string
+    private function buildSlide(string $title, string $chartRid, string $logoRid): string
     {
         $titleEsc = htmlspecialchars($title, ENT_XML1);
-        // Chart frame — matches reference PPTX exactly
-        $offX = 72000;    // tight to left edge
-        $offY = 836711;   // below header banner (logo + title in slideLayout2)
-        $cx   = 8999999;  // full slide width minus tiny left margin
-        $cy   = 5760000;  // fills remaining height to bottom
+        $offX = self::CHART_X;
+        $offY = self::CHART_Y;
+        $cx   = self::CHART_CX;
+        $cy   = self::CHART_CY;
+        $lx   = self::LOGO_X;
+        $ly   = self::LOGO_Y;
+        $lcx  = self::LOGO_CX;
+        $lcy  = self::LOGO_CY;
+        $bg   = self::BG_COLOR;
 
         return <<<XML
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -175,6 +211,12 @@ XML;
        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:cSld name="{$titleEsc}">
+    <p:bg>
+      <p:bgPr>
+        <a:solidFill><a:srgbClr val="{$bg}"/></a:solidFill>
+        <a:effectLst/>
+      </p:bgPr>
+    </p:bg>
     <p:spTree>
       <p:nvGrpSpPr>
         <p:cNvPr id="1" name=""/>
@@ -186,6 +228,22 @@ XML;
           <a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/>
         </a:xfrm>
       </p:grpSpPr>
+      <p:pic>
+        <p:nvPicPr>
+          <p:cNvPr id="3" name="logo"/>
+          <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
+          <p:nvPr/>
+        </p:nvPicPr>
+        <p:blipFill>
+          <a:blip r:embed="{$logoRid}"/>
+          <a:srcRect/>
+          <a:stretch><a:fillRect/></a:stretch>
+        </p:blipFill>
+        <p:spPr>
+          <a:xfrm><a:off x="{$lx}" y="{$ly}"/><a:ext cx="{$lcx}" cy="{$lcy}"/></a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        </p:spPr>
+      </p:pic>
       <p:graphicFrame>
         <p:nvGraphicFramePr>
           <p:cNvPr id="2" name="{$titleEsc}"/>
@@ -213,12 +271,10 @@ XML;
     }
 
     /**
-     * Slide relationships — order matches reference PPTX (25CB-14C.pptx slide2.xml.rels):
-     *   rId1 → slideLayout2 (provides logo + title placeholder header)
+     * Slide relationships:
+     *   rId1 → slideLayout1 (the only layout present in a pptxgenjs-generated file)
      *   rId2 → chart XML
-     *
-     * slideLayout2 ("Titre et contenu") carries the Procorad logo and title zone.
-     * buildSlide() references the chart as rId2 to match.
+     *   rId3 → logo PNG (ppt/media/logo.png)
      */
     private function buildSlideRels(int $chartIndex): string
     {
@@ -227,10 +283,13 @@ XML;
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1"
     Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
-    Target="../slideLayouts/slideLayout2.xml"/>
+    Target="../slideLayouts/slideLayout1.xml"/>
   <Relationship Id="rId2"
     Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
     Target="../charts/chart{$chartIndex}.xml"/>
+  <Relationship Id="rId3"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+    Target="../media/logo.png"/>
 </Relationships>
 XML;
     }

@@ -63,53 +63,58 @@ final class GraphDefinitionFactory
 
     public function bias(SampleAnalysisData $analysis): GraphDefinition
     {
-        $labs   = collect($analysis->labResults)->sortBy('labNumber')->values()->all();
+        // Sorted by bias value ascending — no threshold lines, all bars uniform blue
+        $labs   = collect($analysis->labResults)->sortBy('biasPercent')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->biasPercent ?? 0.0), $labs);
 
         return $this->buildBarGraph(
-            analysis:  $analysis,
-            labs:      $labs,
-            values:    $values,
-            type:      'bias',
-            title:     "{$analysis->isotope} Bias ({$analysis->sampleCode})",
-            yLabel:    '%',
-            // Bias: symmetric around 0, thresholds ±warning/action
-            yMin:      $this->niceMin(min($values) * 1.10),
-            yMax:      $this->niceMax(max($values) * 1.10),
+            analysis:      $analysis,
+            labs:          $labs,
+            values:        $values,
+            type:          'bias',
+            title:         "{$analysis->isotope} Bias ({$analysis->sampleCode})",
+            yLabel:        '%',
+            yMin:          $this->niceMin(min($values) * 1.10),
+            yMax:          $this->niceMax(max($values) * 1.10),
+            showThresholds: false,
         );
     }
 
     public function zprimeScore(SampleAnalysisData $analysis): GraphDefinition
     {
-        $labs   = collect($analysis->labResults)->sortBy('labNumber')->values()->all();
+        // Sorted by z'-score value ascending
+        $labs   = collect($analysis->labResults)->sortBy('zPrimeScore')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->zPrimeScore ?? 0.0), $labs);
 
         return $this->buildBarGraph(
-            analysis: $analysis,
-            labs:     $labs,
-            values:   $values,
-            type:     'zprime_score',
-            title:    "{$analysis->isotope} Z'-score ({$analysis->sampleCode})",
-            yLabel:   "Z'",
-            yMin:     $this->scoreAxisMin($values),
-            yMax:     $this->scoreAxisMax($values),
+            analysis:      $analysis,
+            labs:          $labs,
+            values:        $values,
+            type:          'zprime_score',
+            title:         "{$analysis->isotope} Z'-score ({$analysis->sampleCode})",
+            yLabel:        "Z'",
+            yMin:          $this->scoreAxisMin($values),
+            yMax:          $this->scoreAxisMax($values),
+            showThresholds: true,
         );
     }
 
     public function zetaScore(SampleAnalysisData $analysis): GraphDefinition
     {
-        $labs   = collect($analysis->labResults)->sortBy('labNumber')->values()->all();
+        // Sorted by zeta value ascending
+        $labs   = collect($analysis->labResults)->sortBy('zetaScore')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->zetaScore ?? 0.0), $labs);
 
         return $this->buildBarGraph(
-            analysis: $analysis,
-            labs:     $labs,
-            values:   $values,
-            type:     'zeta_score',
-            title:    "{$analysis->isotope} Zeta-score ({$analysis->sampleCode})",
-            yLabel:   'Zeta',
-            yMin:     $this->scoreAxisMin($values),
-            yMax:     $this->scoreAxisMax($values),
+            analysis:      $analysis,
+            labs:          $labs,
+            values:        $values,
+            type:          'zeta_score',
+            title:         "{$analysis->isotope} Zeta-score ({$analysis->sampleCode})",
+            yLabel:        'Zeta',
+            yMin:          $this->scoreAxisMin($values),
+            yMax:          $this->scoreAxisMax($values),
+            showThresholds: true,
         );
     }
 
@@ -157,25 +162,27 @@ final class GraphDefinitionFactory
         string             $yLabel,
         float              $yMin,
         float              $yMax,
+        bool               $showThresholds = false,
     ): GraphDefinition {
         $categories = array_map(fn ($l) => (string) $l->labNumber, $labs);
 
         return new GraphDefinition(
-            type:          $type,
-            title:         $title,
-            xAxisLabel:    'Laboratoire',
-            yAxisLabel:    $yLabel,
-            categories:    $categories,
-            values:        $values,
-            errorBars:     [],
-            assignedValue: 0.0,
-            assignedUpper: 0.0,
-            assignedLower: 0.0,
-            yMin:          $yMin,
-            yMax:          $yMax,
-            isotope:       $analysis->isotope,
-            sampleCode:    $analysis->sampleCode,
-            chartStyle:    'bar',
+            type:           $type,
+            title:          $title,
+            xAxisLabel:     'Laboratoire',
+            yAxisLabel:     $yLabel,
+            categories:     $categories,
+            values:         $values,
+            errorBars:      [],
+            assignedValue:  0.0,
+            assignedUpper:  0.0,
+            assignedLower:  0.0,
+            yMin:           $yMin,
+            yMax:           $yMax,
+            isotope:        $analysis->isotope,
+            sampleCode:     $analysis->sampleCode,
+            chartStyle:     'bar',
+            showThresholds: $showThresholds,
         );
     }
 

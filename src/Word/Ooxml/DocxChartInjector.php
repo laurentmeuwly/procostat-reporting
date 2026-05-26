@@ -6,28 +6,32 @@ use Procorad\ProcostatReporting\Excel\Ooxml\Definitions\GraphDefinition;
 use Procorad\ProcostatReporting\Shared\Ooxml\ChartXmlBuilder;
 
 /**
- * Injects OOXML charts into a DOCX archive.
+ * Injects OOXML charts into a DOCX archive, grouped 2 per page.
  *
- * For each GraphDefinition:
- *   1. Builds chartN.xml (via ChartXmlBuilder, inline data cache)
- *   2. Adds chartN.xml.rels with external link to xlsx
- *   3. Adds a new page to document.xml (page break + drawing element)
- *   4. Updates word/_rels/document.xml.rels (rId for drawing)
- *   5. Updates [Content_Types].xml
+ * Page layout per analysis (matching PPTX content):
+ *   Page 1 — Results lab-order (top) + Results value-order (bottom)
+ *   Page 2 — Bias (top) + Z'-score (bottom)  [Z'-score omitted if absent]
+ *   Page 3 — Zeta (top, full height if alone)
  *
- * The chart drawing is anchored as an inline image-sized drawing that references
- * the chart via a relationship — same mechanism as the model files.
+ * Each chart drawing is sized to fill half a page (A4 usable area).
+ * A4 usable width (1cm margins each side) ≈ 17800000 EMU
+ * Half-page height (accounting for header + inter-chart gap) ≈ 4650000 EMU
  */
 final class DocxChartInjector
 {
+    // A4 content area in EMU at 1cm margins
+    private const CHART_W     = 17000000; // ~18.5cm — full content width
+    private const CHART_H_HALF= 3800000;  // half-page height (2 charts/page)
+    private const CHART_H_FULL= 7800000;  // full-page height (1 chart/page)
+
     public function __construct(
         private readonly ChartXmlBuilder $chartBuilder = new ChartXmlBuilder(),
     ) {}
 
     /**
-     * @param GraphDefinition[] $graphs
-     * @param string            $docxPath    Absolute path to the docx (modified in-place)
-     * @param string            $xlsxPath    Absolute path to the xlsx (for external link)
+     * @param GraphDefinition[] $graphs   All graphs for one analysis (from GraphDefinitionFactory)
+     * @param string            $docxPath Absolute path to docx (modified in-place)
+     * @param string            $xlsxPath Absolute path to xlsx (for external chart link)
      */
     public function inject(array $graphs, string $docxPath, string $xlsxPath): void
     {
@@ -36,16 +40,14 @@ final class DocxChartInjector
             throw new \RuntimeException("Cannot open DOCX: {$docxPath}");
         }
 
-        // Read existing files we need to patch
-        $documentXml     = $zip->getFromName('word/document.xml');
-        $documentRels    = $zip->getFromName('word/_rels/document.xml.rels');
-        $contentTypes    = $zip->getFromName('[Content_Types].xml');
+        $documentXml  = $zip->getFromName('word/document.xml');
+        $documentRels = $zip->getFromName('word/_rels/document.xml.rels');
+        $contentTypes = $zip->getFromName('[Content_Types].xml');
 
-        // Find the highest existing rId and chartN index
+        // Find next available IDs
         preg_match_all('/Id="rId(\d+)"/', $documentRels, $m);
         $nextRid = empty($m[1]) ? 1 : max(array_map('intval', $m[1])) + 1;
 
-        // Find existing chart files to avoid collision
         $existingCharts = [];
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
@@ -55,77 +57,167 @@ final class DocxChartInjector
         }
         $nextChart = empty($existingCharts) ? 1 : max($existingCharts) + 1;
 
-        // Drawing rId accumulator — pairs (chartFile → rId in document.xml.rels)
-        $newDocRels    = [];
-        $newChartPages = '';
+        // Find next drawing docPr id (must be unique across document)
+        preg_match_all('/docPr id="(\d+)"/', $documentXml, $md);
+        $nextDocPr = empty($md[1]) ? 1 : max(array_map('intval', $md[1])) + 1;
 
-        foreach ($graphs as $graph) {
-            $chartIndex = $nextChart++;
-            $chartFile  = "word/charts/chart{$chartIndex}.xml";
-            $chartRels  = "word/charts/_rels/chart{$chartIndex}.xml.rels";
-            $drawingRid = 'rId' . $nextRid++;
-            $xlsxRid    = 'rId1'; // inside the chart .rels file, always rId1
+        // ── Group graphs into pages ───────────────────────────────────────────
+        // GraphDefinitionFactory produces (in order):
+        //   0: results_lab_asc   → results charts
+        //   1: results_val_asc   ↗
+        //   2: bias              → scores charts (page 2 top)
+        //   3: zprime_score      → page 2 bottom (optional)
+        //   4: zeta_score        → page 3 (alone or with nothing)
+        //
+        // We build pages as arrays of [GraphDefinition, height_emu]
+        $pages = $this->groupIntoPages($graphs);
 
-            // 1. Build and write chartN.xml
-            $chartXml = $this->chartBuilder->build($graph);
-            $zip->addFromString($chartFile, $chartXml);
+        $newDocRels  = '';
+        $chartPages  = '';
+        $newCt       = '';
+        $relsToAdd   = [];
 
-            // 2. Chart relationship → external xlsx
-            $xlsxPathEscaped = str_replace('\\', '/', $xlsxPath);
-            $zip->addFromString($chartRels, $this->buildChartRels($xlsxPathEscaped));
+        foreach ($pages as $pageGraphs) {
+            $chartPages .= '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
 
-            // 3. Drawing rId in document.xml.rels
-            $newDocRels[] = [
-                'id'     => $drawingRid,
-                'type'   => 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart',
-                'target' => "charts/chart{$chartIndex}.xml",
-            ];
+            foreach ($pageGraphs as [$graph, $heightEmu]) {
+                $chartIndex = $nextChart++;
+                $drawingRid = 'rId' . $nextRid++;
+                $docPrId    = $nextDocPr++;
 
-            // 4. Page content — page break + drawing
-            $newChartPages .= $this->buildChartPage($graph->title, $drawingRid);
+                $chartFile = "word/charts/chart{$chartIndex}.xml";
+                $chartRels = "word/charts/_rels/chart{$chartIndex}.xml.rels";
+
+                $zip->addFromString($chartFile, $this->chartBuilder->build($graph));
+                $zip->addFromString($chartRels, $this->buildChartRels(str_replace('\\', '/', $xlsxPath)));
+
+                $relsToAdd[] = sprintf(
+                    '<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart%d.xml"/>',
+                    $drawingRid,
+                    $chartIndex,
+                );
+
+                $newCt .= sprintf(
+                    '<Override PartName="/word/charts/chart%d.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>',
+                    $chartIndex,
+                );
+
+                $titleEsc = htmlspecialchars($graph->title, ENT_XML1);
+                $cx       = self::CHART_W;
+                $cy       = $heightEmu;
+
+                $chartPages .= <<<XML
+<w:p>
+  <w:pPr><w:jc w:val="center"/><w:spacing w:after="80"/></w:pPr>
+  <w:r>
+    <w:drawing>
+      <wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                 distT="0" distB="0" distL="0" distR="0">
+        <wp:extent cx="{$cx}" cy="{$cy}"/>
+        <wp:effectExtent l="0" t="0" r="0" b="0"/>
+        <wp:docPr id="{$docPrId}" name="{$titleEsc}"/>
+        <wp:cNvGraphicFramePr>
+          <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
+        </wp:cNvGraphicFramePr>
+        <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+            <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                     xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                     r:id="{$drawingRid}"/>
+          </a:graphicData>
+        </a:graphic>
+      </wp:inline>
+    </w:drawing>
+  </w:r>
+</w:p>
+XML;
+            }
         }
 
-        // Patch document.xml — append chart pages before </w:body>
-        $documentXml = str_replace(
-            '</w:body>',
-            $newChartPages . '</w:body>',
-            $documentXml,
-        );
+        // Patch document.xml
+        $documentXml = str_replace('</w:body>', $chartPages . '</w:body>', $documentXml);
 
-        // Patch document.xml.rels — add new relationships
-        $relsToAdd = '';
-        foreach ($newDocRels as $rel) {
-            $relsToAdd .= sprintf(
-                '<Relationship Id="%s" Type="%s" Target="%s"/>',
-                $rel['id'], $rel['type'], $rel['target'],
-            );
-        }
-        $documentRels = str_replace('</Relationships>', $relsToAdd . '</Relationships>', $documentRels);
+        // Patch document.xml.rels
+        $documentRels = str_replace('</Relationships>', implode('', $relsToAdd) . '</Relationships>', $documentRels);
 
-        // Patch [Content_Types].xml — add chart content type if missing
-        if (! str_contains($contentTypes, 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml')) {
-            $contentTypes = str_replace(
-                '</Types>',
-                '<Default Extension="xml" ContentType="application/xml"/>'
-                . '<Override PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'
-                . '</Types>',
-                $contentTypes,
-            );
+        // Patch content types
+        if (!str_contains($contentTypes, 'drawingml.chart+xml')) {
+            $contentTypes = str_replace('</Types>',
+                '<Override PartName="/word/charts/chart0_placeholder.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'.
+                '</Types>', $contentTypes);
         }
-        // Add each new chart override
-        foreach ($graphs as $i => $graph) {
-            $idx          = (count($existingCharts) ? max($existingCharts) : 0) + $i + 1;
-            $contentTypes = str_replace(
-                '</Types>',
-                "<Override PartName=\"/word/charts/chart{$idx}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/></Types>",
-                $contentTypes,
-            );
-        }
+        $contentTypes = str_replace('</Types>', $newCt . '</Types>', $contentTypes);
 
-        $zip->addFromString('word/document.xml', $documentXml);
+        $zip->addFromString('word/document.xml',           $documentXml);
         $zip->addFromString('word/_rels/document.xml.rels', $documentRels);
-        $zip->addFromString('[Content_Types].xml', $contentTypes);
+        $zip->addFromString('[Content_Types].xml',          $contentTypes);
         $zip->close();
+    }
+
+    // ── Page grouping ─────────────────────────────────────────────────────────
+
+    /**
+     * Groups GraphDefinitions into pages of 1 or 2 charts.
+     *
+     * Layout:
+     *   Page 1: results_lab_asc (half) + results_val_asc (half)
+     *   Page 2: bias (half) + zprime_score (half, if present)
+     *   Page 3: zeta_score (full, alone)
+     *
+     * If zprime is absent:
+     *   Page 2: bias (full, alone)
+     *   Page 3: zeta_score (full, alone)
+     *
+     * @return array<array<array{0: GraphDefinition, 1: int}>>
+     */
+    private function groupIntoPages(array $graphs): array
+    {
+        // Index by type
+        $byType = [];
+        foreach ($graphs as $g) {
+            $byType[$g->type] = $g;
+        }
+
+        $pages = [];
+
+        // Page 1: results
+        $resultsPage = [];
+        if (isset($byType['results_lab_asc'])) {
+            $resultsPage[] = [$byType['results_lab_asc'], self::CHART_H_HALF];
+        }
+        if (isset($byType['results_val_asc'])) {
+            $resultsPage[] = [$byType['results_val_asc'], self::CHART_H_HALF];
+        }
+        // If only one results chart, make it full height
+        if (count($resultsPage) === 1) {
+            $resultsPage[0][1] = self::CHART_H_FULL;
+        }
+        if (!empty($resultsPage)) {
+            $pages[] = $resultsPage;
+        }
+
+        // Page 2: bias + z'prime (or bias alone)
+        $scoresPage = [];
+        if (isset($byType['bias'])) {
+            $scoresPage[] = [$byType['bias'], self::CHART_H_HALF];
+        }
+        if (isset($byType['zprime_score'])) {
+            $scoresPage[] = [$byType['zprime_score'], self::CHART_H_HALF];
+        }
+        // Bias alone → full height
+        if (count($scoresPage) === 1) {
+            $scoresPage[0][1] = self::CHART_H_FULL;
+        }
+        if (!empty($scoresPage)) {
+            $pages[] = $scoresPage;
+        }
+
+        // Page 3: zeta alone (full height)
+        if (isset($byType['zeta_score'])) {
+            $pages[] = [[$byType['zeta_score'], self::CHART_H_FULL]];
+        }
+
+        return $pages;
     }
 
     // ── XML builders ─────────────────────────────────────────────────────────
@@ -140,45 +232,6 @@ final class DocxChartInjector
     Target="file:///{$xlsxPath}"
     TargetMode="External"/>
 </Relationships>
-XML;
-    }
-
-    /**
-     * Builds one page of document.xml content: page break + full-page chart drawing.
-     * EMU dimensions: A4 width minus margins ≈ 16200000 × 10800000 (portrait)
-     */
-    private function buildChartPage(string $title, string $rId): string
-    {
-        $titleEsc = htmlspecialchars($title, ENT_XML1);
-        // cx/cy in EMU — A4 usable area minus 2cm margins each side ≈ 16837000 × 11906000
-        $cx = 14400000;
-        $cy = 9800000;
-
-        return <<<XML
-<w:p><w:r><w:br w:type="page"/></w:r></w:p>
-<w:p>
-  <w:pPr><w:jc w:val="center"/></w:pPr>
-  <w:r>
-    <w:drawing>
-      <wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
-                 distT="0" distB="0" distL="0" distR="0">
-        <wp:extent cx="{$cx}" cy="{$cy}"/>
-        <wp:effectExtent l="0" t="0" r="0" b="0"/>
-        <wp:docPr id="1" name="{$titleEsc}"/>
-        <wp:cNvGraphicFramePr>
-          <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
-        </wp:cNvGraphicFramePr>
-        <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
-            <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
-                     xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-                     r:id="{$rId}"/>
-          </a:graphicData>
-        </a:graphic>
-      </wp:inline>
-    </w:drawing>
-  </w:r>
-</w:p>
 XML;
     }
 }

@@ -25,5 +25,6 @@ final readonly class GraphDefinition
         public string  $isotope,
         public string  $sampleCode,
         public string  $chartStyle = 'results', // 'results' | 'bar'
+        public bool    $showThresholds = false,  // bar only: draw ±2/±3 lines
     ) {}
 }
