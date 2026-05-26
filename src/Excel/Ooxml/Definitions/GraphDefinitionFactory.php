@@ -10,9 +10,11 @@ use Procorad\ProcostatReporting\Data\SampleAnalysisData;
  * Chart inventory:
  *   0. results_lab_asc  — line+markers, sorted by lab number
  *   1. results_val_asc  — line+markers, sorted by activity
- *   2. bias             — bar chart, biasPercent, sorted by lab number
- *   3. zprime_score     — bar chart, zPrimeScore (only if n >= 12)
- *   4. zeta_score       — bar chart, zetaScore
+ *   2. bias             — bar chart, biasPercent, sorted by value asc
+ *   3. zprime_score     — bar chart, zPrimeScore (only if evaluated n >= 12)
+ *   4. zeta_score       — bar chart, zetaScore, sorted by value asc
+ *
+ * All charts use only "evaluated" labs: isIncluded=true, isTruncated=false, isBelowLod=false.
  */
 final class GraphDefinitionFactory
 {
@@ -27,44 +29,65 @@ final class GraphDefinitionFactory
      */
     public function fromAnalysis(SampleAnalysisData $analysis): array
     {
+        $evaluated = $this->evaluatedLabs($analysis);
+
         $graphs = [
-            $this->resultsLabAsc($analysis),
-            $this->resultsValAsc($analysis),
-            $this->bias($analysis),
+            $this->resultsLabAsc($analysis, $evaluated),
+            $this->resultsValAsc($analysis, $evaluated),
+            $this->bias($analysis, $evaluated),
         ];
 
-        // zprime only when population warrants it
-        if (count($analysis->labResults) >= self::ZPRIME_MIN_POPULATION) {
-            $graphs[] = $this->zprimeScore($analysis);
+        // zprime only when evaluated population warrants it
+        if (count($evaluated) >= self::ZPRIME_MIN_POPULATION) {
+            $graphs[] = $this->zprimeScore($analysis, $evaluated);
         }
 
-        $graphs[] = $this->zetaScore($analysis);
+        $graphs[] = $this->zetaScore($analysis, $evaluated);
 
         return $graphs;
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns only labs that are fully evaluated:
+     *   - included in statistics (isIncluded = true)
+     *   - not truncated / z > 5 (isTruncated = false)
+     *   - result not below detection limit (isBelowLod = false)
+     *
+     * @return \Procorad\ProcostatReporting\Data\LabResultData[]
+     */
+    private function evaluatedLabs(SampleAnalysisData $analysis): array
+    {
+        return array_values(array_filter(
+            $analysis->labResults,
+            fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod,
+        ));
+    }
+
     // ── Results charts ────────────────────────────────────────────────────────
 
-    public function resultsLabAsc(SampleAnalysisData $analysis): GraphDefinition
+    public function resultsLabAsc(SampleAnalysisData $analysis, ?array $labs = null): GraphDefinition
     {
-        $labs = collect($analysis->labResults)->sortBy('labNumber')->values()->all();
+        $labs ??= $this->evaluatedLabs($analysis);
+        $labs = collect($labs)->sortBy('labNumber')->values()->all();
         return $this->buildResultsGraph($analysis, $labs, 'results_lab_asc',
             "{$analysis->isotope} Results ({$analysis->sampleCode})");
     }
 
-    public function resultsValAsc(SampleAnalysisData $analysis): GraphDefinition
+    public function resultsValAsc(SampleAnalysisData $analysis, ?array $labs = null): GraphDefinition
     {
-        $labs = collect($analysis->labResults)->sortBy('activity')->values()->all();
+        $labs ??= $this->evaluatedLabs($analysis);
+        $labs = collect($labs)->sortBy('activity')->values()->all();
         return $this->buildResultsGraph($analysis, $labs, 'results_val_asc',
             "{$analysis->isotope} Results ({$analysis->sampleCode}) — sorted");
     }
 
     // ── Score / bar charts ────────────────────────────────────────────────────
 
-    public function bias(SampleAnalysisData $analysis): GraphDefinition
+    public function bias(SampleAnalysisData $analysis, ?array $labs = null): GraphDefinition
     {
-        // Sorted by bias value ascending — no threshold lines, all bars uniform blue
-        $labs   = collect($analysis->labResults)->sortBy('biasPercent')->values()->all();
+        $labs   = collect($labs ?? $this->evaluatedLabs($analysis))->sortBy('biasPercent')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->biasPercent ?? 0.0), $labs);
 
         return $this->buildBarGraph(
@@ -80,10 +103,9 @@ final class GraphDefinitionFactory
         );
     }
 
-    public function zprimeScore(SampleAnalysisData $analysis): GraphDefinition
+    public function zprimeScore(SampleAnalysisData $analysis, ?array $labs = null): GraphDefinition
     {
-        // Sorted by z'-score value ascending
-        $labs   = collect($analysis->labResults)->sortBy('zPrimeScore')->values()->all();
+        $labs   = collect($labs ?? $this->evaluatedLabs($analysis))->sortBy('zPrimeScore')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->zPrimeScore ?? 0.0), $labs);
 
         return $this->buildBarGraph(
@@ -99,10 +121,9 @@ final class GraphDefinitionFactory
         );
     }
 
-    public function zetaScore(SampleAnalysisData $analysis): GraphDefinition
+    public function zetaScore(SampleAnalysisData $analysis, ?array $labs = null): GraphDefinition
     {
-        // Sorted by zeta value ascending
-        $labs   = collect($analysis->labResults)->sortBy('zetaScore')->values()->all();
+        $labs   = collect($labs ?? $this->evaluatedLabs($analysis))->sortBy('zetaScore')->values()->all();
         $values = array_map(fn ($l) => (float) ($l->zetaScore ?? 0.0), $labs);
 
         return $this->buildBarGraph(
