@@ -255,12 +255,21 @@ function buildAnalysisPage(analysis, chartIndex) {
         ? analysis.robustStdDev
         : (analysis.arithmeticUncertainty ?? null);
 
+    // n≤12 : two extra descriptive rows (median + MADe) appended after Valeur min/max
+    const extraDescriptiveRows = !useRobust ? [
+        ['Médiane',  sciOrDash(analysis.median)   ],
+    ] : [];
+    const extraDescriptiveRowsRight = !useRobust ? [
+        ['MADe',     sciOrDash(analysis.madeScale)],
+    ] : [];
+
     const statRows = [
         ['Échantillon - isotope',          `${analysis.sampleCode} — ${analysis.isotope}`],
         ['Nb laboratoires participants',   String(nbParticipants)                         ],
         ['Valeur assignée',                sciOrDash(analysis.assignedValue)              ],
         ['Incertitude (k=2)',              sciOrDash(analysis.assignedUncertainty)        ],
         ['Valeur min',                     sciOrDash(minActivity)                         ],
+        ...extraDescriptiveRows,
     ];
     const statRowsRight = [
         ['Unité',                          analysis.unit                                  ],
@@ -268,6 +277,7 @@ function buildAnalysisPage(analysis, chartIndex) {
         [meanLabel,                        sciOrDash(meanValue)                           ],
         [spreadLabel,                      sciOrDash(spreadValue)                         ],
         ['Valeur max',                     sciOrDash(maxActivity)                         ],
+        ...extraDescriptiveRowsRight,
     ];
 
     const statColW = Math.floor(CONTENT_WIDTH / 4);

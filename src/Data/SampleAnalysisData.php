@@ -23,6 +23,8 @@ final class SampleAnalysisData
         public readonly ?float  $arithmeticMean          = null,
         /** U(x̄) = expanded uncertainty on the arithmetic mean — used when n ≤ 12. */
         public readonly ?float  $arithmeticUncertainty   = null,
+        public readonly ?float $median     = null,
+        public readonly ?float $madeScale  = null,
         /** Minimum activity value among evaluated labs. */
         public readonly ?float  $valueMin                = null,
         /** Maximum activity value among evaluated labs. */
@@ -43,6 +45,8 @@ final class SampleAnalysisData
             'assignedUncertainty'    => $this->assignedUncertainty,
             'robustMean'             => $this->robustMean,
             'robustStdDev'           => $this->robustStdDev,
+            'median'                 => $this->median,
+            'madeScale'              => $this->madeScale,
             'arithmeticMean'         => $this->arithmeticMean,
             'arithmeticUncertainty'  => $this->arithmeticUncertainty,
             'valueMin'               => $this->valueMin,
