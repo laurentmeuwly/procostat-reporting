@@ -465,6 +465,79 @@ function compareIsotope(a, b) {
 // Sort analyses once — used by both cover list and data pages
 const sortedAnalyses = [...(data.analyses || [])].sort(compareIsotope);
 
+// Sort unexpected isotopes by atomic number too (same comparator, isotope field)
+const unexpectedIsotopes = [...(data.unexpectedIsotopes || [])]
+    .sort((a, b) => compareIsotope(a, b));
+
+// ── Unexpected isotopes page ──────────────────────────────────────────────────
+
+/**
+ * Builds one section per unexpected isotope (isotope found but not part of the exercise).
+ * Only labs with an actual measurement (isBelowLod = false) are shown.
+ * Returns an empty array if no unexpected isotopes have displayable values.
+ */
+function buildUnexpectedIsotopesPages(isotopes) {
+    if (!isotopes || isotopes.length === 0) return [];
+
+    const children = [];
+    children.push(pageBreak());
+    children.push(new Paragraph({
+        spacing: { before: 0, after: 80 },
+        children: [new TextRun({
+            text: 'Isotopes non attendus',
+            bold: true, size: 36, font: 'Calibri', color: COLOR_HEADER,
+        })],
+    }));
+    children.push(separator());
+    children.push(new Paragraph({
+        spacing: { before: 80, after: 200 },
+        children: [new TextRun({
+            text: 'Les tableaux suivants regroupent les valeurs déclarées par les laboratoires pour des isotopes en dehors du programme de comparaison.',
+            size: 18, font: 'Calibri', color: '444444', italic: true,
+        })],
+    }));
+
+    for (const ui of isotopes) {
+        // Filter to labs with actual values (not <LD)
+        const findings = (ui.findings || []).filter(f => !f.isBelowLod && f.activity !== null && f.activity !== undefined);
+        if (findings.length === 0) continue;
+
+        children.push(sectionTitle(`${ui.isotope}  (${ui.unit})`));
+
+        // Columns: LAB N° | Activité | Incertitude (k=2)
+        const colW = [
+            Math.round(CONTENT_WIDTH * 0.15),
+            Math.round(CONTENT_WIDTH * 0.35),
+            0,
+        ];
+        colW[2] = CONTENT_WIDTH - colW[0] - colW[1];
+
+        const hdrRow = new TableRow({ tableHeader: true, children: [
+            headerCell('LAB\nN°',                       colW[0]),
+            headerCell(`Activité\n(${ui.unit})`,        colW[1]),
+            headerCell('Incertitude\n(k=2)',            colW[2]),
+        ]});
+
+        const dataRows = findings.map((f, idx) => {
+            const rowFill = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
+            return new TableRow({ children: [
+                cell(f.labNumber,                    { size: 18, fill: rowFill, bold: true }),
+                cell(sciOrDash(f.activity),           { size: 18, fill: rowFill }),
+                cell(sciOrDash(f.expandedUncertainty), { size: 18, fill: rowFill }),
+            ]});
+        });
+
+        children.push(new Table({
+            width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+            columnWidths: colW,
+            rows: [hdrRow, ...dataRows],
+        }));
+        children.push(new Paragraph({ spacing: { before: 200, after: 0 }, children: [] }));
+    }
+
+    return children;
+}
+
 // ── Assemble document ─────────────────────────────────────────────────────────
 
 const pageProps = {
@@ -474,12 +547,13 @@ const pageProps = {
     },
 };
 
-// Single section: cover + data pages in isotope order.
+// Single section: cover + [tableau+graphes per isotope] + unexpected isotopes at end.
 // Each data page ends with an "isotope_charts_N" bookmark that DocxChartInjector
 // uses to insert chart pages immediately after that analysis's tableau.
 const allChildren = [
     ...buildCoverChildren(sortedAnalyses),
     ...sortedAnalyses.flatMap((analysis, idx) => buildAnalysisPage(analysis, idx)),
+    ...buildUnexpectedIsotopesPages(unexpectedIsotopes),
 ];
 
 const sections = [{
