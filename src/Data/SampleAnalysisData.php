@@ -19,24 +19,36 @@ final class SampleAnalysisData
         public readonly ?float  $assignedUncertainty,
         public readonly ?float  $robustMean,
         public readonly ?float  $robustStdDev,
-        public readonly ?string $primaryIndicator,   // 'z' | 'z_prime'
-        public readonly array   $labResults,          // LabResultData[]
+        /** Arithmetic mean — used instead of robust mean when n ≤ 12. */
+        public readonly ?float  $arithmeticMean          = null,
+        /** U(x̄) = expanded uncertainty on the arithmetic mean — used when n ≤ 12. */
+        public readonly ?float  $arithmeticUncertainty   = null,
+        /** Minimum activity value among evaluated labs. */
+        public readonly ?float  $valueMin                = null,
+        /** Maximum activity value among evaluated labs. */
+        public readonly ?float  $valueMax                = null,
+        public readonly ?string $primaryIndicator   = null,   // 'z' | 'z_prime'
+        public readonly array   $labResults         = [],     // LabResultData[]
     ) {}
 
     /** Serialise for Node.js JSON payload. */
     public function toArray(): array
     {
         return [
-            'sampleCode'          => $this->sampleCode,
-            'isotope'             => $this->isotope,
-            'matrix'              => $this->matrix,
-            'unit'                => $this->unit,
-            'assignedValue'       => $this->assignedValue,
-            'assignedUncertainty' => $this->assignedUncertainty,
-            'robustMean'          => $this->robustMean,
-            'robustStdDev'        => $this->robustStdDev,
-            'primaryIndicator'    => $this->primaryIndicator,
-            'labResults'          => array_map(fn(LabResultData $r) => $r->toArray(), $this->labResults),
+            'sampleCode'             => $this->sampleCode,
+            'isotope'                => $this->isotope,
+            'matrix'                 => $this->matrix,
+            'unit'                   => $this->unit,
+            'assignedValue'          => $this->assignedValue,
+            'assignedUncertainty'    => $this->assignedUncertainty,
+            'robustMean'             => $this->robustMean,
+            'robustStdDev'           => $this->robustStdDev,
+            'arithmeticMean'         => $this->arithmeticMean,
+            'arithmeticUncertainty'  => $this->arithmeticUncertainty,
+            'valueMin'               => $this->valueMin,
+            'valueMax'               => $this->valueMax,
+            'primaryIndicator'       => $this->primaryIndicator,
+            'labResults'             => array_map(fn(LabResultData $r) => $r->toArray(), $this->labResults),
         ];
     }
 }

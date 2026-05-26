@@ -206,156 +206,162 @@ function buildCoverChildren(sorted) {
  */
 function buildAnalysisPage(analysis, chartIndex) {
     const children = [];
-    const allLabs  = analysis.labResults || [];
+    const allLabs   = analysis.labResults || [];
 
     // ── Categorise labs ───────────────────────────────────────────────────
-    // Evaluated: fully included, not truncated, not below LD
     const evaluatedLabs = allLabs.filter(l => l.isIncluded && !l.isTruncated && !l.isBelowLod);
-    // Excluded from stats: outliers (Grubbs/Dixon/manual) or z>5 truncated
     const excludedLabs  = allLabs.filter(l => !l.isBelowLod && (!l.isIncluded || l.isTruncated));
-    // Below detection limit
     const belowLodLabs  = allLabs.filter(l => l.isBelowLod);
 
     const nbParticipants = allLabs.length;
     const nbEvalues      = evaluatedLabs.length;
-    const hasZprime      = nbEvalues >= 12;
+    const useRobust      = nbEvalues > 12;   // n>12 → robust stats; else arithmetic
+    const hasZprime      = nbEvalues > 12;   // z'-score column only when n>12
+
+    // ── Min/max activity — provided by the app via SampleAnalysisData ────
+    const minActivity = analysis.valueMin ?? null;
+    const maxActivity = analysis.valueMax ?? null;
 
     // ── Header: sample + isotope ──────────────────────────────────────────
     children.push(pageBreak());
     children.push(new Paragraph({
         spacing: { before: 0, after: 80 },
-        children: [
-            new TextRun({ text: `${analysis.isotope}  —  ${analysis.sampleCode}`, bold: true, size: 32, font: 'Calibri', color: COLOR_HEADER }),
-        ],
+        children: [new TextRun({
+            text: `${analysis.isotope}  —  ${analysis.sampleCode}`,
+            bold: true, size: 32, font: 'Calibri', color: COLOR_HEADER,
+        })],
     }));
     children.push(separator());
 
     // ── Résumé statistique ────────────────────────────────────────────────
+    // Layout (each row = left pair + right pair):
+    //   Échantillon — Isotope  |  Unité
+    //   Nb participants        |  Nb évalués
+    //   Valeur assignée        |  Moyenne robuste (n>12) ou Moy. arithmétique
+    //   Incertitude (k=2)      |  Écart-type robuste (n>12) ou U(x̄)
+    //   Valeur min             |  Valeur max
     children.push(sectionTitle('Résumé statistique'));
 
+    // n>12 → robust stats; n≤12 → arithmetic stats from DB (arithmetic_mean / u_arith_k2).
+    // arithmeticMean and arithmeticUncertainty are passed via SampleAnalysisData::toArray()
+    // from the calling app's DB fields (arithmetic_mean, u_arith_k2).
+    // If null (not yet populated by the app), falls back to robust values.
+    const meanLabel  = useRobust ? 'Moyenne robuste'    : 'Moyenne arithmétique';
+    const spreadLabel= useRobust ? 'Écart-type robuste' : 'U(x̄)';
+    const meanValue  = useRobust
+        ? analysis.robustMean
+        : (analysis.arithmeticMean ?? null);
+    const spreadValue= useRobust
+        ? analysis.robustStdDev
+        : (analysis.arithmeticUncertainty ?? null);
+
     const statRows = [
-        ['Unité',                        analysis.unit],
-        ['Valeur assignée',              sciOrDash(analysis.assignedValue)],
-        ['Incertitude (k=2)',            sciOrDash(analysis.assignedUncertainty)],
-        ['Nb laboratoires participants', String(nbParticipants)],
-        ['Nb laboratoires évalués',      String(nbEvalues)],
-        ['Moyenne robuste',              sciOrDash(analysis.robustMean)],
-        ['Écart-type robuste',           sciOrDash(analysis.robustStdDev)],
+        ['Échantillon - isotope',          `${analysis.sampleCode} — ${analysis.isotope}`],
+        ['Nb laboratoires participants',   String(nbParticipants)                         ],
+        ['Valeur assignée',                sciOrDash(analysis.assignedValue)              ],
+        ['Incertitude (k=2)',              sciOrDash(analysis.assignedUncertainty)        ],
+        ['Valeur min',                     sciOrDash(minActivity)                         ],
+    ];
+    const statRowsRight = [
+        ['Unité',                          analysis.unit                                  ],
+        ['Nb laboratoires évalués',        String(nbEvalues)                              ],
+        [meanLabel,                        sciOrDash(meanValue)                           ],
+        [spreadLabel,                      sciOrDash(spreadValue)                         ],
+        ['Valeur max',                     sciOrDash(maxActivity)                         ],
     ];
 
-    // Two columns of stats side by side
-    const half       = Math.ceil(statRows.length / 2);
-    const leftStats  = statRows.slice(0, half);
-    const rightStats = statRows.slice(half);
-    while (rightStats.length < leftStats.length) rightStats.push(['', '']);
-
     const statColW = Math.floor(CONTENT_WIDTH / 4);
+    const statFix  = CONTENT_WIDTH - statColW * 4;
+    const cols     = [statColW, statColW, statColW, statColW + statFix];
+
     const statTable = new Table({
         width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-        columnWidths: [statColW, statColW, statColW, statColW],
-        rows: leftStats.map((left, i) => {
-            const right = rightStats[i] || ['', ''];
-            return new TableRow({
-                children: [
-                    cell(left[0],  { bold: true, size: 18, fill: COLOR_ROW_ALT,  align: AlignmentType.LEFT, width: statColW }),
-                    cell(left[1],  { size: 18,             fill: COLOR_ROW_EVEN, align: AlignmentType.LEFT, width: statColW }),
-                    cell(right[0], { bold: true, size: 18, fill: COLOR_ROW_ALT,  align: AlignmentType.LEFT, width: statColW }),
-                    cell(right[1], { size: 18,             fill: COLOR_ROW_EVEN, align: AlignmentType.LEFT, width: statColW }),
-                ],
-            });
+        columnWidths: cols,
+        rows: statRows.map((left, i) => {
+            const right = statRowsRight[i];
+            return new TableRow({ children: [
+                cell(left[0],  { bold: true, size: 18, fill: COLOR_ROW_ALT,  align: AlignmentType.LEFT, width: cols[0] }),
+                cell(left[1],  { size: 18,             fill: COLOR_ROW_EVEN, align: AlignmentType.LEFT, width: cols[1] }),
+                cell(right[0], { bold: true, size: 18, fill: COLOR_ROW_ALT,  align: AlignmentType.LEFT, width: cols[2] }),
+                cell(right[1], { size: 18,             fill: COLOR_ROW_EVEN, align: AlignmentType.LEFT, width: cols[3] }),
+            ]});
         }),
     });
     children.push(statTable);
     children.push(new Paragraph({ spacing: { before: 200, after: 0 }, children: [] }));
 
-    // ── Tableau des résultats (labs évalués uniquement) ────────────────────
+    // ── Tableau principal : labs évalués ──────────────────────────────────
+    // n>12 : [no labo][valeur][incertitude][LD][Biais%][Z'-score][Zeta]
+    // n<=12: [no labo][valeur][incertitude][LD][Biais%][Zeta]
     children.push(sectionTitle('Résultats des laboratoires évalués'));
 
-    // Column definitions — no "Exclu des stats" column (evaluated labs only)
-    const colDefs = hasZprime
+    const mainCols = hasZprime
         ? [
-            { header: 'LAB\nN°',                          w: 650  },
-            { header: `Activité\n(${analysis.unit})`,     w: 1400 },
-            { header: `Incertitude\n(k=2)`,               w: 1400 },
-            { header: `LD\n(${analysis.unit})`,           w: 1100 },
-            { header: 'Biais\n%',                         w: 750  },
-            { header: 'Z-score',                          w: 850  },
-            { header: "Z'-score",                         w: 850  },
-            { header: 'Zeta',                             w: 838  },
+            { h: 'LAB\nN°',                          w: 650  },
+            { h: `Activité\n(${analysis.unit})`,     w: 1400 },
+            { h: `Incertitude\n(k=2)`,               w: 1400 },
+            { h: `LD\n(${analysis.unit})`,           w: 1100 },
+            { h: 'Biais\n%',                         w: 750  },
+            { h: "Z'-score",                         w: 850  },
+            { h: 'Zeta',                             w: 838  },
           ]
         : [
-            { header: 'LAB\nN°',                          w: 750  },
-            { header: `Activité\n(${analysis.unit})`,     w: 1600 },
-            { header: `Incertitude\n(k=2)`,               w: 1600 },
-            { header: `LD\n(${analysis.unit})`,           w: 1200 },
-            { header: 'Biais\n%',                         w: 850  },
-            { header: 'Z-score',                          w: 1000 },
-            { header: 'Zeta',                             w: 1238 },
+            { h: 'LAB\nN°',                          w: 750  },
+            { h: `Activité\n(${analysis.unit})`,     w: 1600 },
+            { h: `Incertitude\n(k=2)`,               w: 1600 },
+            { h: `LD\n(${analysis.unit})`,           w: 1200 },
+            { h: 'Biais\n%',                         w: 850  },
+            { h: 'Zeta',                             w: 1238 },
           ];
 
-    // Adjust widths to exactly CONTENT_WIDTH
-    const totalW = colDefs.reduce((s, c) => s + c.w, 0);
-    const scale  = CONTENT_WIDTH / totalW;
-    colDefs.forEach(c => { c.w = Math.round(c.w * scale); });
-    colDefs[colDefs.length - 1].w += CONTENT_WIDTH - colDefs.reduce((s, c) => s + c.w, 0);
+    const mTotal = mainCols.reduce((s, c) => s + c.w, 0);
+    const mScale = CONTENT_WIDTH / mTotal;
+    mainCols.forEach(c => { c.w = Math.round(c.w * mScale); });
+    mainCols[mainCols.length - 1].w += CONTENT_WIDTH - mainCols.reduce((s, c) => s + c.w, 0);
 
     const mainHeaderRow = new TableRow({
         tableHeader: true,
-        children: colDefs.map(c => headerCell(c.header, c.w)),
+        children: mainCols.map(c => headerCell(c.h, c.w)),
     });
 
     const mainDataRows = evaluatedLabs.map((lab, idx) => {
         const rowFill    = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
-        const zscorefill = scoreCellFill(lab.zScore);
         const zprimefill = scoreCellFill(lab.zPrimeScore);
         const zetafill   = scoreCellFill(lab.zetaScore);
-
         const cells = [
-            cell(lab.labNumber,                  { size: 18, fill: rowFill, bold: true }),
-            cell(sciOrDash(lab.activity),         { size: 18, fill: rowFill }),
+            cell(lab.labNumber,            { size: 18, fill: rowFill, bold: true }),
+            cell(sciOrDash(lab.activity),   { size: 18, fill: rowFill }),
             cell(sciOrDash(lab.expandedUncertainty), { size: 18, fill: rowFill }),
-            cell(sciOrDash(lab.detectionLimit),   { size: 18, fill: rowFill }),
+            cell(sciOrDash(lab.detectionLimit),       { size: 18, fill: rowFill }),
             cell(lab.biasPercent !== null && lab.biasPercent !== undefined
-                ? Math.round(lab.biasPercent) : '—',  { size: 18, fill: rowFill }),
-            cell(roundOrDash(lab.zScore),         { size: 18, fill: zscorefill }),
+                ? Math.round(lab.biasPercent) : '—', { size: 18, fill: rowFill }),
         ];
-        if (hasZprime) {
-            cells.push(cell(roundOrDash(lab.zPrimeScore), { size: 18, fill: zprimefill }));
-        }
+        if (hasZprime) cells.push(cell(roundOrDash(lab.zPrimeScore), { size: 18, fill: zprimefill }));
         cells.push(cell(roundOrDash(lab.zetaScore), { size: 18, fill: zetafill }));
-
         return new TableRow({ children: cells });
     });
 
     children.push(new Table({
         width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-        columnWidths: colDefs.map(c => c.w),
+        columnWidths: mainCols.map(c => c.w),
         rows: [mainHeaderRow, ...mainDataRows],
     }));
 
-    // ── Tableau des exclus (si non vide) ──────────────────────────────────
+    // ── Tableau des non-évalués (si non vide) ─────────────────────────────
+    // [no labo][valeur][incertitude][LD][Motif]
+    // Si motif = tronqué (z>5), afficher aussi son z-score dans la colonne Motif.
     const hasExclusions = excludedLabs.length > 0 || belowLodLabs.length > 0;
     if (hasExclusions) {
         children.push(new Paragraph({ spacing: { before: 240, after: 0 }, children: [] }));
         children.push(sectionTitle('Laboratoires non évalués'));
 
-        // Simple 3-column table: Lab N° | Activité | Motif
-        const exColW = [Math.round(CONTENT_WIDTH * 0.12), Math.round(CONTENT_WIDTH * 0.30), Math.round(CONTENT_WIDTH * 0.58)];
-        exColW[2] += CONTENT_WIDTH - exColW.reduce((s, v) => s + v, 0);
-
-        const exHeader = new TableRow({
-            tableHeader: true,
-            children: [
-                headerCell('LAB\nN°',                       exColW[0]),
-                headerCell(`Activité\n(${analysis.unit})`,  exColW[1]),
-                headerCell('Motif',                         exColW[2]),
-            ],
-        });
-
-        // Map exclusion reason to French label
         function exclusionMotif(lab) {
-            if (lab.isBelowLod)    return 'Valeur < LD';
-            if (lab.isTruncated)   return 'Tronqué (z-score > 5)';
+            if (lab.isBelowLod) return 'Valeur < LD';
+            if (lab.isTruncated) {
+                const z = lab.zScore !== null && lab.zScore !== undefined
+                    ? ` (z-score = ${roundOrDash(lab.zScore)})` : '';
+                return `Tronqué (z-score > 5)${z}`;
+            }
             if (!lab.isIncluded) {
                 switch (lab.exclusionReason) {
                     case 'outlier_grubbs': return 'Aberrant (Grubbs)';
@@ -368,15 +374,32 @@ function buildAnalysisPage(analysis, chartIndex) {
             return lab.exclusionLabel || '—';
         }
 
+        const exColW = [
+            Math.round(CONTENT_WIDTH * 0.10),
+            Math.round(CONTENT_WIDTH * 0.22),
+            Math.round(CONTENT_WIDTH * 0.22),
+            Math.round(CONTENT_WIDTH * 0.16),
+            0,
+        ];
+        exColW[4] = CONTENT_WIDTH - exColW.slice(0, 4).reduce((s, v) => s + v, 0);
+
+        const exHeader = new TableRow({ tableHeader: true, children: [
+            headerCell('LAB\nN°',                       exColW[0]),
+            headerCell(`Activité\n(${analysis.unit})`,  exColW[1]),
+            headerCell('Incertitude\n(k=2)',            exColW[2]),
+            headerCell(`LD\n(${analysis.unit})`,        exColW[3]),
+            headerCell('Motif',                         exColW[4]),
+        ]});
+
         const exRows = [...excludedLabs, ...belowLodLabs].map((lab, idx) => {
             const rowFill = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
-            return new TableRow({
-                children: [
-                    cell(lab.labNumber,            { size: 18, fill: rowFill, bold: true }),
-                    cell(sciOrDash(lab.activity),  { size: 18, fill: rowFill }),
-                    cell(exclusionMotif(lab),       { size: 18, fill: rowFill, align: AlignmentType.LEFT }),
-                ],
-            });
+            return new TableRow({ children: [
+                cell(lab.labNumber,                   { size: 18, fill: rowFill, bold: true }),
+                cell(sciOrDash(lab.activity),          { size: 18, fill: rowFill }),
+                cell(sciOrDash(lab.expandedUncertainty), { size: 18, fill: rowFill }),
+                cell(sciOrDash(lab.detectionLimit),    { size: 18, fill: rowFill }),
+                cell(exclusionMotif(lab),              { size: 18, fill: rowFill, align: AlignmentType.LEFT }),
+            ]});
         });
 
         children.push(new Table({
