@@ -40,7 +40,7 @@ const C = {
 
 // ── Build presentation ────────────────────────────────────────────────────────
 const pres = new pptxgen();
-pres.layout  = 'LAYOUT_16x9';
+pres.layout  = 'LAYOUT_4x3';
 pres.title   = `${data.icTitle} ${data.year}`;
 pres.subject = 'Procorad Reporting';
 pres.author  = 'procostat-reporting';

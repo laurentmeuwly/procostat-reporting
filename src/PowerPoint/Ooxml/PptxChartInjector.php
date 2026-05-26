@@ -89,8 +89,8 @@ final class PptxChartInjector
             $xlsxPathEscaped = str_replace('\\', '/', $xlsxPath);
             $zip->addFromString($chartRelsFile, $this->buildChartRels($xlsxPathEscaped));
 
-            // Slide XML
-            $zip->addFromString($slideFile, $this->buildSlide($graph->title, 'rId1'));
+            // Slide XML — chart is rId2 (rId1 is slideLayout)
+            $zip->addFromString($slideFile, $this->buildSlide($graph->title, 'rId2'));
 
             // Slide rels — reference chart + slide layout
             $zip->addFromString($slideRelsFile, $this->buildSlideRels($chartIndex));
@@ -151,17 +151,23 @@ XML;
     }
 
     /**
-     * A full-bleed 16:9 slide with the chart centred.
-     * Dimensions: 9144000 × 6858000 EMU (standard 10" × 7.5" PowerPoint)
+     * A 4:3 slide with the chart filling the content area below the header.
+     * Slide dimensions: 9144000 × 6858000 EMU (standard 4:3 PowerPoint).
+     * Chart frame matches reference PPTX (25CB-14C.pptx):
+     *   off x=72000 y=836711 — tight to left edge, below the logo/title header
+     *   cx=8999999 cy=5760000 — full width, fills remaining height
+     * The header (logo + title) is provided by slideLayout2, not drawn here.
+     *
+     * Note: chart is referenced as rId2 (rId1 is reserved for the slideLayout).
      */
     private function buildSlide(string $title, string $chartRid): string
     {
         $titleEsc = htmlspecialchars($title, ENT_XML1);
-        // Chart fills most of the slide leaving small margins
-        $offX = 457200;   // 0.5" left
-        $offY = 685800;   // 0.75" top (room for implicit title if needed)
-        $cx   = 8229600;  // ~9"
-        $cy   = 5486400;  // ~6"
+        // Chart frame — matches reference PPTX exactly
+        $offX = 72000;    // tight to left edge
+        $offY = 836711;   // below header banner (logo + title in slideLayout2)
+        $cx   = 8999999;  // full slide width minus tiny left margin
+        $cy   = 5760000;  // fills remaining height to bottom
 
         return <<<XML
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -207,7 +213,12 @@ XML;
     }
 
     /**
-     * Slide relationships: chart (rId1) + slide layout (rId2).
+     * Slide relationships — order matches reference PPTX (25CB-14C.pptx slide2.xml.rels):
+     *   rId1 → slideLayout2 (provides logo + title placeholder header)
+     *   rId2 → chart XML
+     *
+     * slideLayout2 ("Titre et contenu") carries the Procorad logo and title zone.
+     * buildSlide() references the chart as rId2 to match.
      */
     private function buildSlideRels(int $chartIndex): string
     {
@@ -215,11 +226,11 @@ XML;
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+    Target="../slideLayouts/slideLayout2.xml"/>
+  <Relationship Id="rId2"
     Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
     Target="../charts/chart{$chartIndex}.xml"/>
-  <Relationship Id="rId2"
-    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
-    Target="../slideLayouts/slideLayout1.xml"/>
 </Relationships>
 XML;
     }
