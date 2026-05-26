@@ -32,7 +32,7 @@ final class ZPrimeVsZetaSheetBuilder
 
     public function build(Worksheet $ws, SampleAnalysisData $analysis): void
     {
-        $labs    = collect($analysis->labResults)->sortBy('zPrimeScore')->values()->all();
+        $labs = collect($analysis->labResults)->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)->sortBy('zPrimeScore')->values()->all();
         $n       = count($labs);
         $axisMax = ExcelLayout::SCATTER_AXIS_MAX;
 

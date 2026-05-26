@@ -259,6 +259,12 @@ final class AxisContext
         return $this;
     }
 
+    public function setNumberFormat(string $formatCode): self
+    {
+        $this->injector->setNumberFormat($formatCode);
+        return $this;
+    }
+
     public function series(int $index): SeriesContext
     {
         return $this->chartContext->series($index);

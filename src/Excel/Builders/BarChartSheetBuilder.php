@@ -41,7 +41,7 @@ final class BarChartSheetBuilder
         string             $yLabel,
         bool               $withThresholds = false,
     ): void {
-        $labs = collect($analysis->labResults)->sortBy($field)->values()->all();
+        $labs = collect($analysis->labResults)->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)->sortBy($field)->values()->all();
         $n    = count($labs);
 
         $headerRow = ExcelLayout::TABLE_START_ROW;

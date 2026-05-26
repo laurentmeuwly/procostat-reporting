@@ -57,6 +57,7 @@ final class ResultsChartPatcher
                 ->setMarker(MarkerDefinition::none())
             ->yAxis()
                 ->setScale(AxisScaleDefinition::fromZero($yMax))
+                ->setNumberFormat('0.00E+00')
             ->save();
     }
 }

@@ -28,7 +28,7 @@ final class ResultsSheetBuilder
      */
     public function build(Worksheet $ws, SampleAnalysisData $analysis, string $sortBy = 'labNumber'): void
     {
-        $labs = collect($analysis->labResults)->sortBy($sortBy)->values()->all();
+        $labs = collect($analysis->labResults)->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)->sortBy($sortBy)->values()->all();
         $n    = count($labs);
 
         $headerRow = ExcelLayout::TABLE_START_ROW;
@@ -59,12 +59,17 @@ final class ResultsSheetBuilder
             $values = [(string) $lab->labNumber, $lab->activity, $lab->expandedUncertainty, $assigned, $upper, $lower];
 
             foreach ($values as $ci => $value) {
+                $cellRef = "{$cols[$ci]}{$row}";
                 if ($value !== null) {
-                    $ws->getCell("{$cols[$ci]}{$row}")->setValue($value);
+                    $ws->getCell($cellRef)->setValue($value);
                 }
-                $ws->getStyle("{$cols[$ci]}{$row}")->applyFromArray(
+                $ws->getStyle($cellRef)->applyFromArray(
                     CellStyles::dataCell($bg, centerAlign: $ci === 0)
                 );
+                // Columns B–F are numeric values → scientific notation
+                if ($ci > 0 && $value !== null) {
+                    $ws->getStyle($cellRef)->getNumberFormat()->setFormatCode('0.00E+00');
+                }
             }
         }
 

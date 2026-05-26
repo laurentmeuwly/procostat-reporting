@@ -62,4 +62,32 @@ final class AxisInjector
 
         return $this;
     }
+
+    /**
+     * Set the number format code on the axis tick labels.
+     * e.g. '0.00E+00' for scientific notation.
+     */
+    public function setNumberFormat(string $formatCode): self
+    {
+        // Remove existing <c:numFmt> if present
+        XPathHelper::removeChildren($this->axEl, 'numFmt');
+
+        $numFmt = $this->dom->createElementNS(
+            'http://schemas.openxmlformats.org/drawingml/2006/chart',
+            'c:numFmt',
+        );
+        $numFmt->setAttribute('formatCode', $formatCode);
+        $numFmt->setAttribute('sourceLinked', '0');
+
+        // <c:numFmt> belongs after <c:scaling>, <c:delete>, <c:axPos> in OOXML order
+        // Find <c:tickLblPos> and insert before it, or append if not found
+        $tickLblPos = $this->xpath->query('c:tickLblPos', $this->axEl)->item(0);
+        if ($tickLblPos) {
+            $this->axEl->insertBefore($numFmt, $tickLblPos);
+        } else {
+            $this->axEl->appendChild($numFmt);
+        }
+
+        return $this;
+    }
 }
