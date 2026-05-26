@@ -82,6 +82,13 @@ function scoreCellFill(score) {
     return COLOR_OK;
 }
 
+/** Red background when bias < -25% or > +50%, transparent otherwise. */
+function biasCellFill(biasPercent) {
+    if (biasPercent === null || biasPercent === undefined) return COLOR_ROW_EVEN;
+    const b = parseFloat(biasPercent);
+    return (b < -25 || b > 50) ? COLOR_ACTION : COLOR_ROW_EVEN;
+}
+
 function cell(text, opts = {}) {
     const {
         bold = false, size = 18, color = '111111', fill = COLOR_ROW_EVEN,
@@ -255,29 +262,21 @@ function buildAnalysisPage(analysis, chartIndex) {
         ? analysis.robustStdDev
         : (analysis.arithmeticUncertainty ?? null);
 
-    // n≤12 : two extra descriptive rows (median + MADe) appended after Valeur min/max
-    const extraDescriptiveRows = !useRobust ? [
-        ['Médiane',  sciOrDash(analysis.median)   ],
-    ] : [];
-    const extraDescriptiveRowsRight = !useRobust ? [
-        ['MADe',     sciOrDash(analysis.madeScale)],
-    ] : [];
-
     const statRows = [
         ['Échantillon - isotope',          `${analysis.sampleCode} — ${analysis.isotope}`],
         ['Nb laboratoires participants',   String(nbParticipants)                         ],
         ['Valeur assignée',                sciOrDash(analysis.assignedValue)              ],
-        ['Incertitude (k=2)',              sciOrDash(analysis.assignedUncertainty)        ],
+        ['Médiane',                        sciOrDash(analysis.median)                     ],
+        [meanLabel,                        sciOrDash(meanValue)                           ],
         ['Valeur min',                     sciOrDash(minActivity)                         ],
-        ...extraDescriptiveRows,
     ];
     const statRowsRight = [
         ['Unité',                          analysis.unit                                  ],
         ['Nb laboratoires évalués',        String(nbEvalues)                              ],
-        [meanLabel,                        sciOrDash(meanValue)                           ],
+        ['Incertitude (k=2)',              sciOrDash(analysis.assignedUncertainty)        ],
+        ['MADe',                           sciOrDash(analysis.madeScale)                 ],
         [spreadLabel,                      sciOrDash(spreadValue)                         ],
         ['Valeur max',                     sciOrDash(maxActivity)                         ],
-        ...extraDescriptiveRowsRight,
     ];
 
     const statColW = Math.floor(CONTENT_WIDTH / 4);
@@ -335,9 +334,12 @@ function buildAnalysisPage(analysis, chartIndex) {
     });
 
     const mainDataRows = evaluatedLabs.map((lab, idx) => {
-        const rowFill    = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
-        const zprimefill = scoreCellFill(lab.zPrimeScore);
-        const zetafill   = scoreCellFill(lab.zetaScore);
+        const biasBreached = lab.biasPercent !== null && lab.biasPercent !== undefined
+            && (lab.biasPercent < -25 || lab.biasPercent > 50);
+        // Bias breach → entire row red; otherwise alternate zebra
+        const rowFill    = biasBreached ? COLOR_ACTION : (idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT);
+        const zprimefill = biasBreached ? COLOR_ACTION : scoreCellFill(lab.zPrimeScore);
+        const zetafill   = biasBreached ? COLOR_ACTION : scoreCellFill(lab.zetaScore);
         const cells = [
             cell(lab.labNumber,            { size: 18, fill: rowFill, bold: true }),
             cell(sciOrDash(lab.activity),   { size: 18, fill: rowFill }),
