@@ -13,8 +13,8 @@
 const fs = require('fs');
 const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-    ImageRun, Header, AlignmentType, BorderStyle, WidthType, ShadingType,
-    VerticalAlign, PageBreak,
+    ImageRun, Header, Footer, AlignmentType, BorderStyle, WidthType, ShadingType,
+    VerticalAlign, PageBreak, SimpleField,
 } = require('docx');
 
 const [,, payloadPath, outputPath] = process.argv;
@@ -52,11 +52,19 @@ function esc(v) {
     return String(v);
 }
 
-function sciOrDash(v, digits = 4) {
+/**
+ * Format a number in scientific notation with 3 significant digits and uppercase E.
+ * Examples: 2520 → "2.52E3", 70 → "7.00E1", 0.044 → "4.40E-2", 2.72 → "2.72E0"
+ */
+function sciOrDash(v) {
     if (v === null || v === undefined) return '—';
     const n = parseFloat(v);
     if (isNaN(n)) return '—';
-    return n.toExponential(digits - 1).replace('e+', 'e').replace('e-0', 'e-').replace('e+0', 'e');
+    // toExponential(2) = 3 significant digits, always outputs "X.XXe+YY" or "X.XXe-YY"
+    const raw = n.toExponential(2);
+    const [mantissa, expPart] = raw.split('e');
+    const exp = parseInt(expPart, 10); // strips leading zeros and + sign
+    return mantissa + 'E' + exp;      // e.g. "2.52E3", "4.40E-2", "2.72E0"
 }
 
 function roundOrDash(v, decimals = 2) {
@@ -125,23 +133,34 @@ const docHeader = new Header({
     children: [
         new Paragraph({
             alignment: AlignmentType.LEFT,
+            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: COLOR_HEADER } },
+            spacing: { after: 0 },
             children: logoBuf
                 ? [new ImageRun({ data: logoBuf, transformation: { width: 120, height: 46 }, type: 'png' })]
                 : [new TextRun({ text: 'PROCORAD', bold: true, font: 'Calibri', size: 24 })],
         }),
-        new Paragraph({
-            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: COLOR_HEADER } },
-            alignment: AlignmentType.RIGHT,
-            spacing: { after: 0 },
-            children: [new TextRun({
-                text: data.propertyFileTitle || '',
-                size: 18, color: '666666', font: 'Calibri',
-            })],
-        }),
     ],
 });
 
-// ── Cover ─────────────────────────────────────────────────────────────────────
+// ── Footer (page numbering) ───────────────────────────────────────────────────
+// "Page X / Y" centred, with a top border line.
+// Uses SimpleField('PAGE') and SimpleField('NUMPAGES') — the correct OOXML field approach.
+// PageNumberElement generates invalid <w:pgNum/> and breaks Word.
+const docFooter = new Footer({
+    children: [
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            border: { top: { style: BorderStyle.SINGLE, size: 4, color: COLOR_HEADER, space: 4 } },
+            spacing: { before: 80 },
+            children: [
+                new TextRun({ text: 'Page ', size: 18, font: 'Calibri', color: '666666' }),
+                new SimpleField('PAGE'),
+                new TextRun({ text: ' / ', size: 18, font: 'Calibri', color: '666666' }),
+                new SimpleField('NUMPAGES'),
+            ],
+        }),
+    ],
+});
 const coverChildren = [
     new Paragraph({ spacing: { before: 1440, after: 0 }, children: [] }),
     new Paragraph({
@@ -321,6 +340,7 @@ const allChildren = [
 const sections = [{
     properties: pageProps,
     headers: { default: docHeader },
+    footers: { default: docFooter },
     children: allChildren,
 }];
 

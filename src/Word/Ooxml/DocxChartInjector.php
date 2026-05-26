@@ -13,16 +13,20 @@ use Procorad\ProcostatReporting\Shared\Ooxml\ChartXmlBuilder;
  *   Page 2 — Bias (top) + Z'-score (bottom)  [Z'-score omitted if absent]
  *   Page 3 — Zeta (top, full height if alone)
  *
- * Each chart drawing is sized to fill half a page (A4 usable area).
- * A4 usable width (1cm margins each side) ≈ 17800000 EMU
- * Half-page height (accounting for header + inter-chart gap) ≈ 4650000 EMU
+ * Each chart drawing is sized to the full content width of A4 (margins 1cm each side).
+ * A4 usable width ≈ 6,120,000 EMU; all charts use the same height (~4,100,000 EMU)
+ * so the two charts on a shared page sit at equal size and the lone zeta chart
+ * matches them visually (consistent look, easy to add a 4th chart later).
  */
 final class DocxChartInjector
 {
-    // A4 content area in EMU at 1cm margins
-    private const CHART_W     = 17000000; // ~18.5cm — full content width
-    private const CHART_H_HALF= 3800000;  // half-page height (2 charts/page)
-    private const CHART_H_FULL= 7800000;  // full-page height (1 chart/page)
+    // A4 content area in EMU (margins 1134 DXA each side, 1 DXA = 914400/1440 EMU)
+    // Content width:  (11906 - 2×1134) DXA × 635 = 9638 × 635 ≈ 6,120,130 EMU
+    // Content height: (16838 - 2×1134 - ~850 header) DXA × 635 ≈ 8,712,200 EMU total
+    // Two charts per page: each gets ~4,200,000 EMU height (leaves ~300,000 for gap)
+    private const CHART_W      = 6120000; // full content width
+    private const CHART_H_HALF = 4100000; // half-page chart (2 per page)
+    private const CHART_H_FULL = 4100000; // single chart — same size as half (consistent look)
 
     public function __construct(
         private readonly ChartXmlBuilder $chartBuilder = new ChartXmlBuilder(),
