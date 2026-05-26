@@ -104,8 +104,16 @@ final class PptxChartInjector
         preg_match_all('/Id="rId(\d+)"/', $presentationRels, $m);
         $nextRid = empty($m[1]) ? 10 : max(array_map('intval', $m[1])) + 1;
 
-        preg_match_all('/id="(\d+)"/', $presentationXml, $m2);
-        $nextSldId = empty($m2[1]) ? 256 : max(array_map('intval', $m2[1])) + 1;
+        // Extract sldId values only from the <p:sldIdLst> section to avoid
+        // matching unrelated high-value id attributes from pptxgenjs output.
+        // OOXML spec: sldId must be in range [256, 2147483647].
+        $sldIdLst = '';
+        if (preg_match('/<p:sldIdLst>(.*?)<\/p:sldIdLst>/s', $presentationXml, $sldm)) {
+            $sldIdLst = $sldm[1];
+        }
+        preg_match_all('/\bid="(\d+)"/', $sldIdLst, $m2);
+        $maxExisting = empty($m2[1]) ? 255 : max(array_map('intval', $m2[1]));
+        $nextSldId   = max(256, min($maxExisting + 1, 2147483640)); // stay safely below int32 max
 
         $newSlideRels    = '';
         $newSldIdEntries = '';
