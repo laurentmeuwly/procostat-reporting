@@ -14,7 +14,7 @@ const fs = require('fs');
 const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
     ImageRun, Header, Footer, AlignmentType, BorderStyle, WidthType, ShadingType,
-    VerticalAlign, PageBreak, SimpleField,
+    VerticalAlign, PageBreak, SimpleField, BookmarkStart, BookmarkEnd,
 } = require('docx');
 
 const [,, payloadPath, outputPath] = process.argv;
@@ -161,36 +161,50 @@ const docFooter = new Footer({
         }),
     ],
 });
-const coverChildren = [
-    new Paragraph({ spacing: { before: 1440, after: 0 }, children: [] }),
-    new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 120 },
-        children: [new TextRun({ text: data.icTitle, bold: true, size: 56, font: 'Calibri', color: '1a1a1a' })],
-    }),
-    ...(data.analyses || []).map(a => new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 60 },
-        children: [new TextRun({ text: `${a.sampleCode}  —  ${a.isotope}`, size: 28, font: 'Calibri', color: '404040' })],
-    })),
-    separator(),
-    ...['Année', 'IC', 'Date de génération'].map((label, i) => {
-        const values = [data.year, data.icCode, new Date().toLocaleDateString('fr-FR')];
-        return new Paragraph({
-            alignment: AlignmentType.LEFT,
-            spacing: { before: 80, after: 80 },
-            indent: { left: 2880 },
-            children: [
-                new TextRun({ text: label + ' : ', bold: true, size: 22, font: 'Calibri', color: '444444' }),
-                new TextRun({ text: String(values[i] ?? '—'), size: 22, font: 'Calibri', color: '111111' }),
-            ],
-        });
-    }),
-];
+function buildCoverChildren(sorted) {
+    return [
+        new Paragraph({ spacing: { before: 1440, after: 0 }, children: [] }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 120 },
+            children: [new TextRun({ text: data.icTitle, bold: true, size: 56, font: 'Calibri', color: '1a1a1a' })],
+        }),
+        // Cover lists analyses in sorted order
+        ...sorted.map(a => new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 60 },
+            children: [new TextRun({ text: `${a.sampleCode}  —  ${a.isotope}`, size: 28, font: 'Calibri', color: '404040' })],
+        })),
+        separator(),
+        ...['Année', 'IC', 'Date de génération'].map((label, i) => {
+            const values = [data.year, data.icCode, new Date().toLocaleDateString('fr-FR')];
+            return new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 80, after: 80 },
+                indent: { left: 2880 },
+                children: [
+                    new TextRun({ text: label + ' : ', bold: true, size: 22, font: 'Calibri', color: '444444' }),
+                    new TextRun({ text: String(values[i] ?? '—'), size: 22, font: 'Calibri', color: '111111' }),
+                ],
+            });
+        }),
+    ];
+}
 
 // ── Analysis data pages (one per analysis) ────────────────────────────────────
 
-function buildAnalysisPage(analysis) {
+// ── Analysis data pages ───────────────────────────────────────────────────────
+
+/**
+ * Builds the tableau + stats page for one analysis.
+ *
+ * @param {object} analysis
+ * @param {number} chartIndex  Position of this analysis in the sorted list (0-based).
+ *   A BookmarkStart/End named "isotope_charts_<chartIndex>" is appended as the very last
+ *   paragraph. DocxChartInjector.php locates this bookmark and inserts the chart pages
+ *   immediately before it, achieving the [tableau N][graphes N] interleaving.
+ */
+function buildAnalysisPage(analysis, chartIndex) {
     const children = [];
     const hasZprime = (analysis.labResults || []).length >= 12;
 
@@ -319,10 +333,63 @@ function buildAnalysisPage(analysis) {
 
     children.push(resultsTable);
 
+    // ── Chart insertion marker ────────────────────────────────────────────
+    // DocxChartInjector.php finds this bookmark and inserts chart pages before it.
+    // BookmarkStart positional API: (name, id) — name first, numeric id second.
+    // BookmarkEnd positional API: (id).
+    const bmId = chartIndex;
+    children.push(new Paragraph({
+        children: [
+            new BookmarkStart(`isotope_charts_${chartIndex}`, bmId),
+            new BookmarkEnd(bmId),
+        ],
+    }));
+
     return children;
 }
 
-// ── Assemble sections ─────────────────────────────────────────────────────────
+// ── Isotope sorting ───────────────────────────────────────────────────────────
+
+/**
+ * Atomic number (Z) lookup by element symbol.
+ * Covers the full periodic table up to Og (Z=118).
+ * Isotope strings like "14C", "228Th", "210Pb" are parsed as:
+ *   leading digits → mass number A (for secondary sort within same element)
+ *   trailing letters → element symbol → Z (primary sort key)
+ */
+const ATOMIC_NUMBER = {
+    H:1,He:2,Li:3,Be:4,B:5,C:6,N:7,O:8,F:9,Ne:10,
+    Na:11,Mg:12,Al:13,Si:14,P:15,S:16,Cl:17,Ar:18,K:19,Ca:20,
+    Sc:21,Ti:22,V:23,Cr:24,Mn:25,Fe:26,Co:27,Ni:28,Cu:29,Zn:30,
+    Ga:31,Ge:32,As:33,Se:34,Br:35,Kr:36,Rb:37,Sr:38,Y:39,Zr:40,
+    Nb:41,Mo:42,Tc:43,Ru:44,Rh:45,Pd:46,Ag:47,Cd:48,In:49,Sn:50,
+    Sb:51,Te:52,I:53,Xe:54,Cs:55,Ba:56,La:57,Ce:58,Pr:59,Nd:60,
+    Pm:61,Sm:62,Eu:63,Gd:64,Tb:65,Dy:66,Ho:67,Er:68,Tm:69,Yb:70,
+    Lu:71,Hf:72,Ta:73,W:74,Re:75,Os:76,Ir:77,Pt:78,Au:79,Hg:80,
+    Tl:81,Pb:82,Bi:83,Po:84,At:85,Rn:86,Fr:87,Ra:88,Ac:89,Th:90,
+    Pa:91,U:92,Np:93,Pu:94,Am:95,Cm:96,Bk:97,Cf:98,Es:99,Fm:100,
+    Md:101,No:102,Lr:103,Rf:104,Db:105,Sg:106,Bh:107,Hs:108,Mt:109,Ds:110,
+    Rg:111,Cn:112,Nh:113,Fl:114,Mc:115,Lv:116,Ts:117,Og:118,
+};
+
+/** Parse "228Th" → { A: 228, Z: 90 }. Returns { A: 0, Z: 999 } for unrecognised strings. */
+function parseIsotope(str) {
+    const m = String(str || '').match(/^(\d*)([A-Za-z]+)/);
+    if (!m) return { A: 0, Z: 999 };
+    const symbol = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
+    return { A: parseInt(m[1], 10) || 0, Z: ATOMIC_NUMBER[symbol] ?? 999 };
+}
+
+/** Sort comparator: ascending by (Z, A), i.e. atomic number then mass number. */
+function compareIsotope(a, b) {
+    const ia = parseIsotope(a.isotope), ib = parseIsotope(b.isotope);
+    return ia.Z !== ib.Z ? ia.Z - ib.Z : ia.A - ib.A;
+}
+
+// Sort analyses once — used by both cover list and data pages
+const sortedAnalyses = [...(data.analyses || [])].sort(compareIsotope);
+
+// ── Assemble document ─────────────────────────────────────────────────────────
 
 const pageProps = {
     page: {
@@ -331,10 +398,12 @@ const pageProps = {
     },
 };
 
-// Single section: cover + all analysis data pages (no blank page between sections)
+// Single section: cover + data pages in isotope order.
+// Each data page ends with an "isotope_charts_N" bookmark that DocxChartInjector
+// uses to insert chart pages immediately after that analysis's tableau.
 const allChildren = [
-    ...coverChildren,
-    ...(data.analyses || []).flatMap(buildAnalysisPage),
+    ...buildCoverChildren(sortedAnalyses),
+    ...sortedAnalyses.flatMap((analysis, idx) => buildAnalysisPage(analysis, idx)),
 ];
 
 const sections = [{

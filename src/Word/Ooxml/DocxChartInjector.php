@@ -33,11 +33,15 @@ final class DocxChartInjector
     ) {}
 
     /**
-     * @param GraphDefinition[] $graphs   All graphs for one analysis (from GraphDefinitionFactory)
-     * @param string            $docxPath Absolute path to docx (modified in-place)
-     * @param string            $xlsxPath Absolute path to xlsx (for external chart link)
+     * @param GraphDefinition[] $graphs        All graphs for one analysis (from GraphDefinitionFactory)
+     * @param string            $docxPath      Absolute path to docx (modified in-place)
+     * @param string            $xlsxPath      Absolute path to xlsx (for external chart link)
+     * @param int               $analysisIndex 0-based position in the sorted analyses list.
+     *   render-docx.js writes a bookmark named "isotope_charts_{analysisIndex}" at the end of
+     *   each analysis's tableau. Chart pages are inserted BEFORE that bookmark so the final
+     *   document interleaves: [tableau 0][graphs 0][tableau 1][graphs 1]…
      */
-    public function inject(array $graphs, string $docxPath, string $xlsxPath): void
+    public function inject(array $graphs, string $docxPath, string $xlsxPath, int $analysisIndex = 0): void
     {
         $zip = new \ZipArchive();
         if ($zip->open($docxPath) !== true) {
@@ -138,8 +142,22 @@ XML;
             }
         }
 
-        // Patch document.xml
-        $documentXml = str_replace('</w:body>', $chartPages . '</w:body>', $documentXml);
+        // Patch document.xml — insert chart pages before the bookmark marker left by render-docx.js.
+        // The bookmark paragraph looks like: <w:bookmarkStart w:name="isotope_charts_N" .../>
+        // We match the entire containing <w:p> and insert chart pages before it.
+        $bookmarkName   = 'isotope_charts_' . $analysisIndex;
+        $bookmarkPattern = '/<w:p\b[^>]*>(?:[^<]|<(?!w:p\b))*?' . preg_quote($bookmarkName, '/') . '.*?<\/w:p>/s';
+
+        if (preg_match($bookmarkPattern, $documentXml, $bm, PREG_OFFSET_CAPTURE)) {
+            // Insert chart pages at the position of the bookmark paragraph
+            $insertAt    = $bm[0][1];
+            $documentXml = substr($documentXml, 0, $insertAt)
+                         . $chartPages
+                         . substr($documentXml, $insertAt);
+        } else {
+            // Fallback: bookmark not found (older document without markers) — append to body
+            $documentXml = str_replace('</w:body>', $chartPages . '</w:body>', $documentXml);
+        }
 
         // Patch document.xml.rels
         $documentRels = str_replace('</Relationships>', implode('', $relsToAdd) . '</Relationships>', $documentRels);
