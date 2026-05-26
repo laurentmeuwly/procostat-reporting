@@ -92,7 +92,7 @@ final class ChartXmlBuilder
         <c:axId val="1003"/><c:axId val="1004"/>
       </c:scatterChart>
       {$this->catAxis('1001', '1002')}
-      {$this->valAxis('1002', '1001', '0', $yMax, $yLbl)}
+      {$this->valAxis('1002', '1001', '0', $yMax, $yLbl, true)}
       {$this->hiddenScatterAxes()}
     </c:plotArea>
     <c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/>
@@ -412,13 +412,14 @@ XML;
 XML;
     }
 
-    private function valAxis(string $axId, string $crossAx, string $yMin, string $yMax, string $label): string
+    private function valAxis(string $axId, string $crossAx, string $yMin, string $yMax, string $label, bool $sciFormat = false): string
     {
-        $labelXml = $label !== '' ? <<<LBLXML
+        $labelXml  = $label !== '' ? <<<LBLXML
 <c:title><c:tx><c:rich><a:bodyPr rot="-5400000"/><a:lstStyle/>
   <a:p><a:r><a:rPr lang="fr-FR" sz="1000" b="1"/><a:t>{$label}</a:t></a:r></a:p>
 </c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>
 LBLXML : '';
+        $numFmt = $sciFormat ? '0.00E+00' : 'General';
 
         return <<<XML
 <c:valAx>
@@ -433,7 +434,7 @@ LBLXML : '';
     <c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></c:spPr>
   </c:majorGridlines>
   {$labelXml}
-  <c:numFmt formatCode="General" sourceLinked="0"/>
+  <c:numFmt formatCode="{$numFmt}" sourceLinked="0"/>
   <c:majorTickMark val="out"/><c:minorTickMark val="none"/>
   <c:tickLblPos val="nextTo"/>
   <c:txPr><a:bodyPr/><a:lstStyle/>

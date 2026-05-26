@@ -80,7 +80,7 @@ final class GraphDefinitionFactory
         $labs ??= $this->evaluatedLabs($analysis);
         $labs = collect($labs)->sortBy('activity')->values()->all();
         return $this->buildResultsGraph($analysis, $labs, 'results_val_asc',
-            "{$analysis->isotope} Results ({$analysis->sampleCode}) — sorted");
+            "{$analysis->isotope} Results ({$analysis->sampleCode})");
     }
 
     // ── Score / bar charts ────────────────────────────────────────────────────

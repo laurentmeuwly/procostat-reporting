@@ -334,22 +334,23 @@ function buildAnalysisPage(analysis, chartIndex) {
     });
 
     const mainDataRows = evaluatedLabs.map((lab, idx) => {
-        const biasBreached = lab.biasPercent !== null && lab.biasPercent !== undefined
-            && (lab.biasPercent < -25 || lab.biasPercent > 50);
-        // Bias breach → entire row red; otherwise alternate zebra
-        const rowFill    = biasBreached ? COLOR_ACTION : (idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT);
-        const zprimefill = biasBreached ? COLOR_ACTION : scoreCellFill(lab.zPrimeScore);
-        const zetafill   = biasBreached ? COLOR_ACTION : scoreCellFill(lab.zetaScore);
+        const zebra      = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
+        const biasFill   = biasCellFill(lab.biasPercent);
+        const zprimefill = scoreCellFill(lab.zPrimeScore);
+        const zetafill   = scoreCellFill(lab.zetaScore);
+        // Z'/Zeta cells: use score colour if triggered, otherwise zebra
+        const zprimeCell = zprimefill !== COLOR_ROW_EVEN ? zprimefill : zebra;
+        const zetaCell   = zetafill   !== COLOR_ROW_EVEN ? zetafill   : zebra;
         const cells = [
-            cell(lab.labNumber,            { size: 18, fill: rowFill, bold: true }),
-            cell(sciOrDash(lab.activity),   { size: 18, fill: rowFill }),
-            cell(sciOrDash(lab.expandedUncertainty), { size: 18, fill: rowFill }),
-            cell(sciOrDash(lab.detectionLimit),       { size: 18, fill: rowFill }),
+            cell(lab.labNumber,            { size: 18, fill: zebra, bold: true }),
+            cell(sciOrDash(lab.activity),   { size: 18, fill: zebra }),
+            cell(sciOrDash(lab.expandedUncertainty), { size: 18, fill: zebra }),
+            cell(sciOrDash(lab.detectionLimit),       { size: 18, fill: zebra }),
             cell(lab.biasPercent !== null && lab.biasPercent !== undefined
-                ? Math.round(lab.biasPercent) : '—', { size: 18, fill: rowFill }),
+                ? Math.round(lab.biasPercent) : '—', { size: 18, fill: biasFill !== COLOR_ROW_EVEN ? biasFill : zebra }),
         ];
-        if (hasZprime) cells.push(cell(roundOrDash(lab.zPrimeScore), { size: 18, fill: zprimefill }));
-        cells.push(cell(roundOrDash(lab.zetaScore), { size: 18, fill: zetafill }));
+        if (hasZprime) cells.push(cell(roundOrDash(lab.zPrimeScore), { size: 18, fill: zprimeCell }));
+        cells.push(cell(roundOrDash(lab.zetaScore), { size: 18, fill: zetaCell }));
         return new TableRow({ children: cells });
     });
 
