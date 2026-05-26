@@ -262,6 +262,7 @@ XML;
             $dPts .= <<<XML
 <c:dPt>
   <c:idx val="{$i}"/>
+  <c:invertIfNegative val="0"/>
   <c:spPr><a:solidFill><a:srgbClr val="{$color}"/></a:solidFill>
     <a:ln><a:solidFill><a:srgbClr val="{$color}"/></a:solidFill></a:ln>
   </c:spPr>
