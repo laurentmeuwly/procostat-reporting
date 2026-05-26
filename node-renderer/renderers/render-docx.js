@@ -518,24 +518,27 @@ function buildUnexpectedIsotopesPages(isotopes) {
 
         // Columns: LAB N° | Activité | Incertitude (k=2)
         const colW = [
-            Math.round(CONTENT_WIDTH * 0.15),
-            Math.round(CONTENT_WIDTH * 0.35),
+            Math.round(CONTENT_WIDTH * 0.12),
+            Math.round(CONTENT_WIDTH * 0.30),
+            Math.round(CONTENT_WIDTH * 0.30),
             0,
         ];
-        colW[2] = CONTENT_WIDTH - colW[0] - colW[1];
+        colW[3] = CONTENT_WIDTH - colW[0] - colW[1] - colW[2];
 
         const hdrRow = new TableRow({ tableHeader: true, children: [
             headerCell('LAB\nN°',                       colW[0]),
             headerCell(`Activité\n(${ui.unit})`,        colW[1]),
             headerCell('Incertitude\n(k=2)',            colW[2]),
+            headerCell(`LD\n(${ui.unit})`,              colW[3]),
         ]});
 
         const dataRows = findings.map((f, idx) => {
             const rowFill = idx % 2 === 0 ? COLOR_ROW_EVEN : COLOR_ROW_ALT;
             return new TableRow({ children: [
-                cell(f.labNumber,                    { size: 18, fill: rowFill, bold: true }),
-                cell(sciOrDash(f.activity),           { size: 18, fill: rowFill }),
-                cell(sciOrDash(f.expandedUncertainty), { size: 18, fill: rowFill }),
+                cell(f.labNumber,                      { size: 18, fill: rowFill, bold: true }),
+                cell(sciOrDash(f.activity),             { size: 18, fill: rowFill }),
+                cell(sciOrDash(f.expandedUncertainty),  { size: 18, fill: rowFill }),
+                cell(sciOrDash(f.detectionLimit ?? null), { size: 18, fill: rowFill }),
             ]});
         });
 

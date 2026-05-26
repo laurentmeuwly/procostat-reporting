@@ -53,12 +53,14 @@ final class UnexpectedIsotopeData
         int    $labNumber,
         ?float $activity,
         ?float $expandedUncertainty = null,
+        ?float $detectionLimit      = null,
         bool   $isBelowLod          = false,
     ): array {
         return [
             'labNumber'           => $labNumber,
             'activity'            => $activity,
             'expandedUncertainty' => $expandedUncertainty,
+            'detectionLimit'      => $detectionLimit,
             'isBelowLod'          => $isBelowLod,
         ];
     }

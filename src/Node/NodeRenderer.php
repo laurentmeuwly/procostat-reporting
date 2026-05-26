@@ -62,9 +62,10 @@ final class NodeRenderer
         } catch (\Throwable $e) {
             throw ReportGenerationException::fromThrowable($format, $e);
         } finally {
-            if (file_exists($tmpJson)) {
+            /*if (file_exists($tmpJson)) {
                 unlink($tmpJson);
-            }
+            }*/
+                \Log::debug('node_payload_path', ['path' => $tmpJson]);
         }
     }
 }

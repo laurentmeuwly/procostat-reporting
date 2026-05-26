@@ -45,10 +45,18 @@ final class WordReportGenerator implements ReportGenerator
     /** @return array<string, mixed> */
     private function buildPayload(ProcostatReportData $data): array
     {
-        return array_merge($data->toArray(), [
-            'logoPath'          => PackagePaths::asset('logo.png'),
-            'propertyFileTitle' => $data->metadata['propertyFileTitle'] ?? 'Property File Title',
-            'locale'            => $data->metadata['locale'] ?? 'fr',
+        $payload = array_merge($data->toArray(), [
+            'logoPath'    => PackagePaths::asset('logo.png'),
+            'locale'      => $data->metadata['locale'] ?? 'fr',
+            'generatedAt' => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
         ]);
+
+        \Log::debug('docx_payload_check', [
+            'keys'               => array_keys($payload),
+            'unexpectedIsotopes' => count($payload['unexpectedIsotopes'] ?? []),
+            'analyses'           => count($payload['analyses'] ?? []),
+        ]);
+
+        return $payload;
     }
 }

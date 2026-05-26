@@ -115,11 +115,19 @@ final class WordDocumentGenerator implements DocumentGenerator
     /** @return array<string,mixed> */
     private function buildPayload(IntercomparisonReportData $data): array
     {
-        return array_merge($data->toArray(), [
-            'logoPath'   => PackagePaths::asset('logo.png'),
-            'locale'     => $data->metadata['locale'] ?? 'fr',
-            'generatedAt'=> (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
+        $payload = array_merge($data->toArray(), [
+            'logoPath'    => PackagePaths::asset('logo.png'),
+            'locale'      => $data->metadata['locale'] ?? 'fr',
+            'generatedAt' => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
         ]);
+
+        \Log::debug('docx_payload_check', [
+            'keys'               => array_keys($payload),
+            'unexpectedIsotopes' => count($payload['unexpectedIsotopes'] ?? []),
+            'analyses'           => count($payload['analyses'] ?? []),
+        ]);
+
+        return $payload;
     }
 
     private function resolveXlsxPath(

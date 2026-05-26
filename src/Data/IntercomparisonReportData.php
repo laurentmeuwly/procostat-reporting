@@ -31,13 +31,13 @@ final class IntercomparisonReportData
             'icTitle'            => $this->icTitle,
             'year'               => $this->year,
             'analyses'           => array_map(fn(SampleAnalysisData $a) => $a->toArray(), $this->analyses),
-            'unexpectedIsotopes' => array_map(
+            'unexpectedIsotopes' => array_values(array_map(
                 fn(UnexpectedIsotopeData $u) => $u->toArray(),
                 array_filter(
                     $this->unexpectedIsotopes,
                     fn(UnexpectedIsotopeData $u) => $u->hasDisplayableValues(),
                 ),
-            ),
+            )),
             'metadata'           => $this->metadata,
         ];
     }

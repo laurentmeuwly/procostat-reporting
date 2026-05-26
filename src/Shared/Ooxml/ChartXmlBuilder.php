@@ -137,24 +137,36 @@ XML;
         $yMin  = $fmt($graph->yMin);
 
         if ($graph->showThresholds) {
-            $bars = $this->buildColoredBars($graph->values, $graph->categories, $fmt);
+            $bars = $this->buildColoredBars(
+                $graph->values,
+                $graph->categories,
+                $fmt,
+                $graph->thresholdLow,
+                $graph->thresholdHigh,
+                $graph->warningLow,
+                $graph->warningHigh,
+            );
         } else {
-            // bias: all bars uniform blue, no per-bar colour override
+            // uniform blue (kept for legacy, currently unused since bias now has thresholds)
             $bars = $this->buildUniformBars($graph->values, $graph->categories, $fmt);
         }
 
         if ($graph->showThresholds) {
-            $warn = 2.0;
-            $act  = 3.0;
-            // Threshold series: use the same string categories as the barChart.
-            // They reference the lineChart's own catAx (2003) so PowerPoint
-            // keeps them visually aligned with the bars.
+            $lo   = $graph->thresholdLow;
+            $hi   = $graph->thresholdHigh;
             $cats = $graph->categories;
+
+            // Action lines (red, dashed) at thresholdLow / thresholdHigh
             $thresholdSeries =
-                $this->lineThresholdCat(1, $cats, $fmt($warn),  'FFA500', 'dash') .
-                $this->lineThresholdCat(2, $cats, $fmt(-$warn), 'FFA500', 'dash') .
-                $this->lineThresholdCat(3, $cats, $fmt($act),   'FF0000', 'lgDash') .
-                $this->lineThresholdCat(4, $cats, $fmt(-$act),  'FF0000', 'lgDash');
+                $this->lineThresholdCat(1, $cats, $fmt($hi), 'FF0000', 'lgDash') .
+                $this->lineThresholdCat(2, $cats, $fmt($lo), 'FF0000', 'lgDash');
+
+            // Warning lines (orange, dashed) — optional, only when warningLow/High are set
+            if ($graph->warningLow !== null && $graph->warningHigh !== null) {
+                $thresholdSeries .=
+                    $this->lineThresholdCat(3, $cats, $fmt($graph->warningHigh), 'FFA500', 'dash') .
+                    $this->lineThresholdCat(4, $cats, $fmt($graph->warningLow),  'FFA500', 'dash');
+            }
 
             $lineChartBlock = <<<XML
 
@@ -245,20 +257,34 @@ XML;
     }
 
     /**
-     * Bar series with per-bar colour based on threshold (|v| ≥ 3 red, ≥ 2 orange, else blue).
-     * Used for z-prime and zeta score charts.
-     * - invertIfNegative val="0" keeps negative bars solid (same colour, not inverted/hollow)
-     * - showCatName val="1" on series dLbls displays lab numbers above/below each bar
+     * Bar series with per-bar colour based on threshold breaches.
+     * Red   if v < $thresholdLow  OR  v > $thresholdHigh  (action zone)
+     * Orange if warningLow/High set AND v in warning-but-not-action zone
+     * Blue  otherwise
+     * invertIfNegative=0 on series AND each dPt keeps negative bars solid.
      */
-    private function buildColoredBars(array $values, array $categories, callable $fmt): string
-    {
+    private function buildColoredBars(
+        array    $values,
+        array    $categories,
+        callable $fmt,
+        float    $thresholdLow  = -3.0,
+        float    $thresholdHigh = 3.0,
+        ?float   $warningLow    = null,
+        ?float   $warningHigh   = null,
+    ): string {
         $catCache = $this->strCache($categories);
         $valCache = $this->numCache($values, $fmt);
 
         $dPts = '';
         foreach ($values as $i => $v) {
-            $abs   = abs($v);
-            $color = $abs >= 3.0 ? 'FF0000' : ($abs >= 2.0 ? 'FFA500' : '4472C4');
+            if ($v < $thresholdLow || $v > $thresholdHigh) {
+                $color = 'FF0000'; // red — action
+            } elseif ($warningLow !== null && $warningHigh !== null
+                   && ($v < $warningLow || $v > $warningHigh)) {
+                $color = 'FFA500'; // orange — warning
+            } else {
+                $color = '4472C4'; // blue — OK
+            }
             $dPts .= <<<XML
 <c:dPt>
   <c:idx val="{$i}"/>
@@ -403,7 +429,9 @@ LBLXML : '';
     <c:min val="{$yMin}"/>
   </c:scaling>
   <c:delete val="0"/><c:axPos val="l"/>
-  <c:majorGridlines/>
+  <c:majorGridlines>
+    <c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></c:spPr>
+  </c:majorGridlines>
   {$labelXml}
   <c:numFmt formatCode="General" sourceLinked="0"/>
   <c:majorTickMark val="out"/><c:minorTickMark val="none"/>
