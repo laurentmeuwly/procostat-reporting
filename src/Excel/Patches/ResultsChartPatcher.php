@@ -58,6 +58,6 @@ final class ResultsChartPatcher
             ->yAxis()
                 ->setScale(AxisScaleDefinition::fromZero($yMax))
                 ->setNumberFormat('0.00E+00')
-            ->save();
+            ->flush();
     }
 }

@@ -89,6 +89,44 @@ final class ChartDocument
         );
     }
 
+    // ── Direct XML access (for regex-based patchers) ──────────────────────────
+
+    /**
+     * Return the raw XML string for the chart at the given 0-based index.
+     * This reflects any in-memory mutations already applied (e.g. via chart()->series()->setLine()).
+     */
+    public function getRawXml(int $index): string
+    {
+        $keys = array_keys($this->charts);
+        sort($keys);
+
+        if (! isset($keys[$index])) {
+            throw new \InvalidArgumentException(
+                "Chart index {$index} out of range (found " . count($keys) . " charts)."
+            );
+        }
+
+        return $this->charts[$keys[$index]];
+    }
+
+    /**
+     * Replace the in-memory XML for the chart at the given 0-based index.
+     * Changes are written to disk on the next save() call.
+     */
+    public function setRawXml(int $index, string $xml): void
+    {
+        $keys = array_keys($this->charts);
+        sort($keys);
+
+        if (! isset($keys[$index])) {
+            throw new \InvalidArgumentException(
+                "Chart index {$index} out of range (found " . count($keys) . " charts)."
+            );
+        }
+
+        $this->charts[$keys[$index]] = $xml;
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     /**
@@ -183,6 +221,19 @@ final class ChartContext
 
     // ── Persistence ───────────────────────────────────────────────────────────
 
+    /**
+     * Push DOM changes back to ChartDocument's in-memory XML without writing to disk.
+     * Use this when you need to apply further regex-based patches via getRawXml/setRawXml
+     * before a final doc->save().
+     */
+    public function flush(): ChartDocument
+    {
+        $patched = $this->dom->saveXML();
+        ($this->onSave)($patched);
+
+        return $this->document;
+    }
+
     public function save(): ChartDocument
     {
         $patched = $this->dom->saveXML();
@@ -237,15 +288,18 @@ final class SeriesContext
         return $this->chartContext->xAxis($index);
     }
 
+    /** Push DOM changes to in-memory XML without writing to disk. */
+    public function flush(): ChartDocument
+    {
+        return $this->chartContext->flush();
+    }
+
     public function save(): ChartDocument
     {
         return $this->chartContext->save();
     }
 }
 
-/**
- * Fluent wrapper around AxisInjector — chains back to ChartContext.
- */
 final class AxisContext
 {
     public function __construct(
@@ -273,6 +327,12 @@ final class AxisContext
     public function yAxis(int $index = 0): AxisContext
     {
         return $this->chartContext->yAxis($index);
+    }
+
+    /** Push DOM changes to in-memory XML without writing to disk. */
+    public function flush(): ChartDocument
+    {
+        return $this->chartContext->flush();
     }
 
     public function save(): ChartDocument

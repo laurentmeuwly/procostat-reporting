@@ -109,7 +109,7 @@ final class ExcelDocumentGenerator implements DocumentGenerator
 
         // Sheets 3-4 — bar charts (always)
         $barBuilder = new BarChartSheetBuilder(new BarChartBuilder());
-        $barBuilder->build($spreadsheet->createSheet()->setTitle(self::SHEET_BIAS),  $analysis, field: 'biasPercent', yLabel: '%',    withThresholds: false);
+        $barBuilder->build($spreadsheet->createSheet()->setTitle(self::SHEET_BIAS),  $analysis, field: 'biasPercent', yLabel: '%',    withThresholds: true,  thresholdLow: -25.0, thresholdHigh: 50.0);
         $barBuilder->build($spreadsheet->createSheet()->setTitle(self::SHEET_ZETA),  $analysis, field: 'zetaScore',   yLabel: 'Zeta', withThresholds: true);
 
         // Sheets 5-6 — zprime charts (population > 12 only)
@@ -144,17 +144,38 @@ final class ExcelDocumentGenerator implements DocumentGenerator
         $resultsPatcher->patch($doc, self::CHART_RESULTS_LAB, self::SHEET_RESULTS_LAB, $n, $yMax);
         $resultsPatcher->patch($doc, self::CHART_RESULTS_VAL, self::SHEET_RESULTS_VAL, $n, $yMax);
 
-        // Bar charts
-        $barPatcher->patch($doc, self::CHART_BIAS, self::SHEET_BIAS, withThresholds: false, barValues: []);
+        // Bar charts — bias uses asymmetric thresholds (-25 / +50)
+        $biasValues = collect($analysis->labResults)
+            ->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)
+            ->sortBy('biasPercent')
+            ->pluck('biasPercent')
+            ->toArray();
+        $barPatcher->patch($doc, self::CHART_BIAS, self::SHEET_BIAS,
+            withThresholds: true,
+            barValues:      $biasValues,
+            thresholdLow:   -25.0,
+            thresholdHigh:  50.0,
+        );
 
-        $zetaValues = collect($analysis->labResults)->sortBy('zetaScore')->pluck('zetaScore')->toArray();
+        $zetaValues = collect($analysis->labResults)
+            ->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)
+            ->sortBy('zetaScore')
+            ->pluck('zetaScore')
+            ->toArray();
         $barPatcher->patch($doc, self::CHART_ZETA, self::SHEET_ZETA, withThresholds: true, barValues: $zetaValues);
 
         if ($hasZprime) {
-            $zprimeValues = collect($analysis->labResults)->sortBy('zPrimeScore')->pluck('zPrimeScore')->toArray();
+            $zprimeValues = collect($analysis->labResults)
+                ->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)
+                ->sortBy('zPrimeScore')
+                ->pluck('zPrimeScore')
+                ->toArray();
             $barPatcher->patch($doc, self::CHART_ZPRIME, self::SHEET_ZPRIME, withThresholds: true, barValues: $zprimeValues);
             //(new ScatterChartPatcher())->patch($doc, self::CHART_SCATTER);
         }
+
+        // Write all in-memory chart XML changes to disk in one pass.
+        $doc->save();
 
         // Drawing XML repair — must run last, after all chart patches are written
         (new DrawingRelationshipFixer())->fix($outputPath);

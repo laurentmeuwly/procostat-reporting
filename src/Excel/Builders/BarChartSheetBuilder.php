@@ -32,7 +32,9 @@ final class BarChartSheetBuilder
     /**
      * @param string $field          Property name on LabResultData: 'biasPercent' | 'zetaScore' | 'zPrimeScore'
      * @param string $yLabel         Y-axis label and series name
-     * @param bool   $withThresholds Write threshold reference data (±2/±3 lines)
+     * @param bool   $withThresholds Write threshold reference data
+     * @param float  $thresholdLow   Lower threshold value (default -3 for scores, -25 for bias)
+     * @param float  $thresholdHigh  Upper threshold value (default +3 for scores, +50 for bias)
      */
     public function build(
         Worksheet          $ws,
@@ -40,6 +42,8 @@ final class BarChartSheetBuilder
         string             $field,
         string             $yLabel,
         bool               $withThresholds = false,
+        float              $thresholdLow   = -3.0,
+        float              $thresholdHigh  = 3.0,
     ): void {
         $labs = collect($analysis->labResults)->filter(fn ($l) => $l->isIncluded && !$l->isTruncated && !$l->isBelowLod)->sortBy($field)->values()->all();
         $n    = count($labs);
@@ -78,16 +82,10 @@ final class BarChartSheetBuilder
             $ws->getStyle("B{$row}")->applyFromArray(CellStyles::dataCell($bg));
         }
 
-        // Threshold reference data
+        // No threshold data columns needed — BarChartPatcher injects inline numLit values.
+        // (Columns D-G are left empty.)
         if ($withThresholds) {
-            foreach (['D', 'E', 'F', 'G'] as $col) {
-                $ws->getColumnDimension($col)->setWidth(8);
-            }
-            // Write two points per line (first row and last row) — EMPTY_AS_GAP ignores blanks
-            $ws->getCell("D{$firstData}")->setValue(2.0);   $ws->getCell("D{$lastData}")->setValue(2.0);
-            $ws->getCell("E{$firstData}")->setValue(-2.0);  $ws->getCell("E{$lastData}")->setValue(-2.0);
-            $ws->getCell("F{$firstData}")->setValue(3.0);   $ws->getCell("F{$lastData}")->setValue(3.0);
-            $ws->getCell("G{$firstData}")->setValue(-3.0);  $ws->getCell("G{$lastData}")->setValue(-3.0);
+            // reserved — intentionally empty
         }
 
         $ws->addChart($this->chartBuilder->build($ws->getTitle(), $analysis, $yLabel, $n));
